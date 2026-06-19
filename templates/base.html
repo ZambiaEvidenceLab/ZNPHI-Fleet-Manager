@@ -23,7 +23,14 @@
             {% if user.is_authenticated %}
             <ul class="menu menu-horizontal gap-1 text-sm">
                 {% if is_fleet_manager or is_superadmin %}
-                {# Phase 4: Request Queue link #}
+                <li>
+                    <a href="{% url 'bookings:request_queue' %}" class="font-medium">
+                        Request Queue
+                        {% if pending_request_count %}
+                        <span class="badge badge-warning badge-sm">{{ pending_request_count }}</span>
+                        {% endif %}
+                    </a>
+                </li>
                 {% endif %}
                 {% if is_requester or is_fleet_manager or is_superadmin %}
                 <li><a href="{% url 'bookings:request_create' %}" class="font-medium">New Request</a></li>

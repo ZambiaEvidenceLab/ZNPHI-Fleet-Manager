@@ -3,16 +3,21 @@ import datetime
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
+from django.db.models import F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.views.generic import DetailView, ListView, View
 
 from accounts.mixins import GroupRequiredMixin
-from .forms import CoordinationAcknowledgmentForm, TransportRequestForm
-from .models import District, Province, TransportRequest
+from fleet.models import Driver, Vehicle
+from .forms import CoordinationAcknowledgmentForm, RequestApprovalForm, TransportRequestForm
+from .models import District, Province, TransportRequest, TripAssignment
 
 # Default nudge window. Made configurable via Settings model in Phase 8.
 NUDGE_WINDOW_DAYS = 7
+
+# Default buffer days between consecutive trips for the same vehicle. Made configurable in Phase 8.
+BUFFER_DAYS = 1
 
 
 def get_overlapping_trips(district, period_from, period_to):
@@ -237,3 +242,163 @@ class TransportRequestCancelView(LoginRequiredMixin, View):
             messages.success(request, 'Request cancelled successfully.')
 
         return redirect('bookings:my_requests')
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Fleet Manager approval and assignment workflow
+# ---------------------------------------------------------------------------
+
+def get_available_vehicles(period_from, period_to, buffer_days=BUFFER_DAYS):
+    """Return vehicles that can be assigned for the given date range.
+
+    Excludes vehicles that:
+    - Are already committed to a trip whose dates (plus buffer) overlap the window.
+    - Have overdue maintenance (current mileage exceeds last_service_mileage + interval).
+    """
+    window_start = period_from - datetime.timedelta(days=buffer_days)
+    window_end = period_to + datetime.timedelta(days=buffer_days)
+
+    booked_ids = (
+        TripAssignment.objects
+        .filter(
+            transport_request__status__in=['Submitted', 'Approved', 'In Progress'],
+            transport_request__period_from__lte=window_end,
+            transport_request__period_to__gte=window_start,
+        )
+        .values_list('vehicle_id', flat=True)
+    )
+
+    # Overdue: current mileage exceeds the mileage threshold for next service.
+    overdue = Q(
+        last_service_mileage__isnull=False,
+        current_mileage__gt=F('last_service_mileage') + F('maintenance_interval_km'),
+    )
+
+    return (
+        Vehicle.objects
+        .exclude(pk__in=booked_ids)
+        .exclude(overdue)
+        .order_by('license_plate')
+    )
+
+
+def get_available_drivers(period_from, period_to, buffer_days=BUFFER_DAYS):
+    """Return drivers with Available status and no overlapping assignment (with buffer)."""
+    window_start = period_from - datetime.timedelta(days=buffer_days)
+    window_end = period_to + datetime.timedelta(days=buffer_days)
+
+    busy_ids = (
+        TripAssignment.objects
+        .filter(
+            transport_request__status__in=['Submitted', 'Approved', 'In Progress'],
+            transport_request__period_from__lte=window_end,
+            transport_request__period_to__gte=window_start,
+        )
+        .values_list('driver_id', flat=True)
+    )
+
+    return Driver.objects.filter(status='Available').exclude(pk__in=busy_ids)
+
+
+def _vehicles_with_info(available_vehicles_qs):
+    """Attach upcoming-trip context to each available vehicle for display on the review screen."""
+    result = []
+    for v in available_vehicles_qs:
+        # Most recent upcoming/active assignment — tells the fleet manager when this vehicle
+        # last returns and from where, so they can judge scheduling feasibility.
+        upcoming = (
+            TripAssignment.objects
+            .filter(vehicle=v, transport_request__status__in=['Approved', 'In Progress'])
+            .select_related('transport_request__district')
+            .order_by('transport_request__period_to')
+            .last()
+        )
+        result.append({
+            'vehicle': v,
+            'return_trip': upcoming.transport_request if upcoming else None,
+        })
+    return result
+
+
+class RequestQueueView(GroupRequiredMixin, ListView):
+    """Landing page for Fleet Managers: all pending (Submitted) requests sorted by urgency."""
+    group_required = ['Fleet Manager', 'Superadmin']
+    template_name = 'bookings/request_queue.html'
+    context_object_name = 'requests'
+
+    def get_queryset(self):
+        # Emergencies first, then soonest start date.
+        return (
+            TransportRequest.objects
+            .filter(status='Submitted')
+            .select_related('department', 'district', 'province')
+            .order_by('-is_emergency', 'period_from')
+        )
+
+
+class RequestReviewView(GroupRequiredMixin, View):
+    """Review a single Submitted request: display details, show available vehicles,
+    and let the Fleet Manager approve (with assignment) or reject."""
+    group_required = ['Fleet Manager', 'Superadmin']
+    template_name = 'bookings/request_review.html'
+
+    def _get_tr(self, pk):
+        return get_object_or_404(
+            TransportRequest.objects
+            .select_related('department', 'district', 'province')
+            .prefetch_related('assignments'),
+            pk=pk,
+            status='Submitted',
+        )
+
+    def _context(self, tr, form, available_vehicles_qs, overlapping):
+        return {
+            'tr': tr,
+            'form': form,
+            'vehicles_with_info': _vehicles_with_info(available_vehicles_qs),
+            'overlapping': overlapping,
+            'is_late': tr.is_late_booking,
+        }
+
+    def get(self, request, pk):
+        tr = self._get_tr(pk)
+        avail_v = get_available_vehicles(tr.period_from, tr.period_to)
+        avail_d = get_available_drivers(tr.period_from, tr.period_to)
+        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to).exclude(pk=tr.pk)
+        form = RequestApprovalForm(num_vehicles=tr.num_vehicles, available_vehicles=avail_v, available_drivers=avail_d)
+        return render(request, self.template_name, self._context(tr, form, avail_v, overlapping))
+
+    def post(self, request, pk):
+        tr = self._get_tr(pk)
+        action = request.POST.get('action')
+        avail_v = get_available_vehicles(tr.period_from, tr.period_to)
+        avail_d = get_available_drivers(tr.period_from, tr.period_to)
+        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to).exclude(pk=tr.pk)
+
+        if action == 'reject':
+            tr.status = 'Rejected'
+            tr.admin_comment = request.POST.get('admin_comment', '')
+            tr.save()
+            messages.success(request, f'Request #{tr.pk} rejected.')
+            return redirect('bookings:request_queue')
+
+        if action == 'approve':
+            form = RequestApprovalForm(
+                request.POST,
+                num_vehicles=tr.num_vehicles,
+                available_vehicles=avail_v,
+                available_drivers=avail_d,
+            )
+            if not form.is_valid():
+                return render(request, self.template_name, self._context(tr, form, avail_v, overlapping))
+
+            for vehicle, driver in form.assignment_pairs():
+                TripAssignment.objects.create(transport_request=tr, vehicle=vehicle, driver=driver)
+            tr.status = 'Approved'
+            tr.admin_comment = form.cleaned_data.get('admin_comment', '')
+            tr.approved_date = datetime.date.today()
+            tr.save()
+            messages.success(request, f'Request #{tr.pk} approved.')
+            return redirect('bookings:request_queue')
+
+        return redirect('bookings:request_review', pk=pk)

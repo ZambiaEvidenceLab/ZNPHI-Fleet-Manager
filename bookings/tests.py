@@ -4,7 +4,7 @@ from django.contrib.auth.models import Group
 from django.test import TestCase
 from django.urls import reverse
 from .models import Province, District, Department, TransportRequest, TripAssignment
-from .views import get_overlapping_trips
+from .views import get_available_drivers, get_available_vehicles, get_overlapping_trips
 from fleet.models import Vehicle, Driver
 
 User = get_user_model()
@@ -634,3 +634,279 @@ class TransportRequestCancelViewTest(TestCase):
         self.client.post(reverse('bookings:request_cancel', args=[self.req.pk]))
         self.req.refresh_from_db()
         self.assertEqual(self.req.status, 'Submitted')
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Availability filtering, queue, and approval workflow tests
+# ---------------------------------------------------------------------------
+
+class GetAvailableVehiclesTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.future = datetime.date.today() + datetime.timedelta(weeks=4)
+
+    def test_unbooked_vehicle_is_available(self):
+        v = make_vehicle()
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertIn(v, result)
+
+    def test_booked_vehicle_excluded(self):
+        v = make_vehicle()
+        driver = make_driver()
+        tr = make_request(
+            province=self.province, district=self.district, status='Approved',
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=3),
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=driver)
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertNotIn(v, result)
+
+    def test_buffer_excludes_adjacent_vehicle(self):
+        # Existing trip ends the day before our start. With 1-day buffer, it overlaps.
+        v = make_vehicle()
+        driver = make_driver()
+        existing_end = self.future - datetime.timedelta(days=1)
+        tr = make_request(
+            province=self.province, district=self.district, status='Approved',
+            period_from=existing_end - datetime.timedelta(days=2),
+            period_to=existing_end,
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=driver)
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3), buffer_days=1)
+        self.assertNotIn(v, result)
+
+    def test_vehicle_outside_buffer_is_available(self):
+        # Existing trip ends 2 days before our start. With 1-day buffer, no overlap.
+        v = make_vehicle()
+        driver = make_driver()
+        existing_end = self.future - datetime.timedelta(days=2)
+        tr = make_request(
+            province=self.province, district=self.district, status='Approved',
+            period_from=existing_end - datetime.timedelta(days=2),
+            period_to=existing_end,
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=driver)
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3), buffer_days=1)
+        self.assertIn(v, result)
+
+    def test_overdue_maintenance_vehicle_excluded(self):
+        # current_mileage (56 000) > last_service (50 000) + interval (5 000) → overdue
+        v = Vehicle.objects.create(
+            make='Toyota', model='Hilux', year=2020,
+            license_plate='ZM RED 01', vehicle_type='Hilux',
+            current_mileage=56000, seating_capacity=5, fuel_type='Diesel',
+            maintenance_interval_km=5000, last_service_mileage=50000,
+        )
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertNotIn(v, result)
+
+    def test_vehicle_with_no_maintenance_baseline_included(self):
+        # last_service_mileage is None → maintenance_status == 'unknown' → not excluded
+        v = Vehicle.objects.create(
+            make='Toyota', model='Hilux', year=2022,
+            license_plate='ZM NEW 01', vehicle_type='Hilux',
+            current_mileage=1000, seating_capacity=5, fuel_type='Diesel',
+            last_service_mileage=None,
+        )
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertIn(v, result)
+
+    def test_cancelled_trip_does_not_block_vehicle(self):
+        v = make_vehicle()
+        driver = make_driver()
+        tr = make_request(
+            province=self.province, district=self.district, status='Cancelled',
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=3),
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=driver)
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertIn(v, result)
+
+    def test_rejected_trip_does_not_block_vehicle(self):
+        v = make_vehicle()
+        driver = make_driver()
+        tr = make_request(
+            province=self.province, district=self.district, status='Rejected',
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=3),
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=driver)
+        result = get_available_vehicles(self.future, self.future + datetime.timedelta(days=3))
+        self.assertIn(v, result)
+
+
+class GetAvailableDriversTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.future = datetime.date.today() + datetime.timedelta(weeks=4)
+
+    def test_available_driver_returned(self):
+        d = make_driver()
+        result = get_available_drivers(self.future, self.future + datetime.timedelta(days=3))
+        self.assertIn(d, result)
+
+    def test_on_leave_driver_excluded(self):
+        d = Driver.objects.create(name='On Leave Driver', status='On Leave')
+        result = get_available_drivers(self.future, self.future + datetime.timedelta(days=3))
+        self.assertNotIn(d, result)
+
+    def test_driver_assigned_to_overlapping_trip_excluded(self):
+        v = make_vehicle()
+        d = make_driver()
+        tr = make_request(
+            province=self.province, district=self.district, status='Approved',
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=3),
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=v, driver=d)
+        result = get_available_drivers(self.future, self.future + datetime.timedelta(days=3))
+        self.assertNotIn(d, result)
+
+
+class RequestQueueViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.manager = make_user(username='manager', group_name='Fleet Manager')
+        self.requester = make_user(username='req', group_name='Requester')
+        self.url = reverse('bookings:request_queue')
+
+    def test_requester_cannot_access(self):
+        self.client.login(username='req', password='testpass123')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_fleet_manager_can_access(self):
+        self.client.login(username='manager', password='testpass123')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'bookings/request_queue.html')
+
+    def test_shows_only_submitted_requests(self):
+        self.client.login(username='manager', password='testpass123')
+        submitted = make_request(province=self.province, district=self.district, status='Submitted')
+        approved = make_request(province=self.province, district=self.district, status='Approved')
+        response = self.client.get(self.url)
+        ctx = list(response.context['requests'])
+        self.assertIn(submitted, ctx)
+        self.assertNotIn(approved, ctx)
+
+    def test_emergency_requests_ordered_first(self):
+        self.client.login(username='manager', password='testpass123')
+        future = datetime.date.today() + datetime.timedelta(weeks=4)
+        normal = make_request(
+            province=self.province, district=self.district,
+            period_from=future, period_to=future + datetime.timedelta(days=2),
+        )
+        emergency = make_request(
+            province=self.province, district=self.district,
+            period_from=future + datetime.timedelta(days=5),
+            period_to=future + datetime.timedelta(days=7),
+            is_emergency=True,
+        )
+        response = self.client.get(self.url)
+        ctx = list(response.context['requests'])
+        self.assertEqual(ctx[0], emergency)
+        self.assertEqual(ctx[1], normal)
+
+
+class RequestReviewViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.manager = make_user(username='manager', group_name='Fleet Manager')
+        self.client.login(username='manager', password='testpass123')
+        self.future = datetime.date.today() + datetime.timedelta(weeks=4)
+        self.tr = make_request(
+            province=self.province, district=self.district,
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=3),
+        )
+        self.vehicle = make_vehicle()
+        self.driver = make_driver()
+
+    def test_get_renders_review_page(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'bookings/request_review.html')
+
+    def test_approve_creates_assignment(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.post(url, {
+            'action': 'approve',
+            'vehicle_1': str(self.vehicle.pk),
+            'driver_1': str(self.driver.pk),
+            'admin_comment': '',
+        })
+        self.assertRedirects(response, reverse('bookings:request_queue'), fetch_redirect_response=False)
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.status, 'Approved')
+        self.assertEqual(TripAssignment.objects.filter(transport_request=self.tr).count(), 1)
+
+    def test_approve_sets_approved_date(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        self.client.post(url, {
+            'action': 'approve',
+            'vehicle_1': str(self.vehicle.pk),
+            'driver_1': str(self.driver.pk),
+            'admin_comment': '',
+        })
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.approved_date, datetime.date.today())
+
+    def test_approve_saves_comment(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        self.client.post(url, {
+            'action': 'approve',
+            'vehicle_1': str(self.vehicle.pk),
+            'driver_1': str(self.driver.pk),
+            'admin_comment': 'Approved — Land Cruiser assigned.',
+        })
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.admin_comment, 'Approved — Land Cruiser assigned.')
+
+    def test_reject_updates_status_and_comment(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        self.client.post(url, {
+            'action': 'reject',
+            'admin_comment': 'No vehicles available for this period.',
+        })
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.status, 'Rejected')
+        self.assertEqual(self.tr.admin_comment, 'No vehicles available for this period.')
+        self.assertEqual(TripAssignment.objects.filter(transport_request=self.tr).count(), 0)
+
+    def test_approve_without_vehicle_rerenders_form_with_errors(self):
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.post(url, {
+            'action': 'approve',
+            'vehicle_1': '',
+            'driver_1': str(self.driver.pk),
+            'admin_comment': '',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.status, 'Submitted')
+        self.assertEqual(TripAssignment.objects.filter(transport_request=self.tr).count(), 0)
+
+    def test_non_submitted_request_returns_404(self):
+        self.tr.status = 'Approved'
+        self.tr.save()
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_requester_cannot_access_review(self):
+        make_user(username='req', group_name='Requester')
+        self.client.login(username='req', password='testpass123')
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 403)

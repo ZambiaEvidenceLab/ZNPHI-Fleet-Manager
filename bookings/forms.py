@@ -1,5 +1,6 @@
 from django import forms
 
+from fleet.models import Driver, Vehicle
 from .models import District, TransportRequest
 
 
@@ -41,6 +42,46 @@ class TransportRequestForm(forms.ModelForm):
         if district and province and district.province != province:
             raise forms.ValidationError('Selected district does not belong to the selected province.')
         return cleaned
+
+
+class RequestApprovalForm(forms.Form):
+    admin_comment = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 3, 'class': 'textarea textarea-bordered w-full'}),
+        required=False,
+        label='Comment (visible to requester)',
+    )
+
+    def __init__(self, *args, num_vehicles=1, available_vehicles=None, available_drivers=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        vehicle_qs = available_vehicles if available_vehicles is not None else Vehicle.objects.none()
+        driver_qs = available_drivers if available_drivers is not None else Driver.objects.none()
+        for i in range(1, num_vehicles + 1):
+            self.fields[f'vehicle_{i}'] = forms.ModelChoiceField(
+                queryset=vehicle_qs,
+                label=f'Vehicle {i}',
+                empty_label='Select vehicle…',
+                widget=forms.Select(attrs={'class': 'select select-bordered w-full'}),
+            )
+            self.fields[f'driver_{i}'] = forms.ModelChoiceField(
+                queryset=driver_qs,
+                label=f'Driver {i}',
+                empty_label='Select driver…',
+                widget=forms.Select(attrs={'class': 'select select-bordered w-full'}),
+            )
+
+    def field_groups(self):
+        """Yield (vehicle_boundfield, driver_boundfield) pairs for template rendering."""
+        i = 1
+        while f'vehicle_{i}' in self.fields:
+            yield self[f'vehicle_{i}'], self[f'driver_{i}']
+            i += 1
+
+    def assignment_pairs(self):
+        """Yield (vehicle, driver) model instances from cleaned_data."""
+        i = 1
+        while f'vehicle_{i}' in self.cleaned_data:
+            yield self.cleaned_data[f'vehicle_{i}'], self.cleaned_data[f'driver_{i}']
+            i += 1
 
 
 class CoordinationAcknowledgmentForm(forms.Form):

@@ -55,6 +55,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'accounts.context_processors.user_roles',
+                'bookings.context_processors.pending_request_count',
             ],
         },
     },

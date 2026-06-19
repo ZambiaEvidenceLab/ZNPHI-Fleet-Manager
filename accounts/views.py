@@ -25,7 +25,7 @@ class HomeView(LoginRequiredMixin, View):
         if user.is_superuser or user.groups.filter(name='Superadmin').exists():
             return redirect(reverse_lazy('accounts:user_list'))
         if user.groups.filter(name='Fleet Manager').exists():
-            return redirect(reverse_lazy('bookings:my_requests'))
+            return redirect(reverse_lazy('bookings:request_queue'))
         if user.groups.filter(name='Requester').exists():
             return redirect('/bookings/my-requests/')
         if user.groups.filter(name='Dashboard Viewer').exists():
