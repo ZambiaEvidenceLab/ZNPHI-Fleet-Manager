@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Create User — ZNPHI Fleet Manager{% endblock %}
+
+{% block content %}
+<div class="max-w-lg">
+    <div class="mb-6">
+        <a href="{% url 'accounts:user_list' %}" class="btn btn-ghost btn-sm">&larr; Back to Users</a>
+    </div>
+
+    <div class="card bg-base-100 shadow">
+        <div class="card-body">
+            <h2 class="card-title text-xl font-bold mb-4">Create New User</h2>
+
+            {% if form.non_field_errors %}
+            <div role="alert" class="alert alert-error mb-4">
+                {% for error in form.non_field_errors %}
+                <span>{{ error }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <form method="post" novalidate>
+                {% csrf_token %}
+
+                {% for field in form %}
+                <div class="form-control mb-4">
+                    <label class="label" for="{{ field.id_for_label }}">
+                        <span class="label-text font-medium">
+                            {{ field.label }}
+                            {% if field.field.required %}<span class="text-error ml-1">*</span>{% endif %}
+                        </span>
+                    </label>
+                    {% if field.field.widget.input_type == 'select' %}
+                    <select
+                        id="{{ field.id_for_label }}"
+                        name="{{ field.html_name }}"
+                        class="select select-bordered {% if field.errors %}select-error{% endif %} w-full"
+                    >
+                        {% for value, label in field.field.choices %}
+                        <option value="{{ value }}" {% if field.value == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    {% else %}
+                    <input
+                        type="{{ field.field.widget.input_type }}"
+                        id="{{ field.id_for_label }}"
+                        name="{{ field.html_name }}"
+                        value="{% if field.field.widget.input_type != 'password' %}{{ field.value|default:'' }}{% endif %}"
+                        class="input input-bordered {% if field.errors %}input-error{% endif %} w-full"
+                    >
+                    {% endif %}
+                    {% for error in field.errors %}
+                    <label class="label"><span class="label-text-alt text-error">{{ error }}</span></label>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+
+                <div class="card-actions justify-end mt-2">
+                    <a href="{% url 'accounts:user_list' %}" class="btn btn-ghost">Cancel</a>
+                    <button type="submit" class="btn btn-primary">Create User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
