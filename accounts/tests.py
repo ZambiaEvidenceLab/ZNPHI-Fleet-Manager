@@ -73,11 +73,11 @@ class HomeViewRoleRoutingTest(TestCase):
         response = self.client.get('/')
         self.assertRedirects(response, '/accounts/users/', fetch_redirect_response=False)
 
-    def test_fleet_manager_goes_to_queue(self):
+    def test_fleet_manager_goes_to_my_requests(self):
         user = make_user('manager1', group_name='Fleet Manager')
         self.client.force_login(user)
         response = self.client.get('/')
-        self.assertRedirects(response, '/bookings/queue/', fetch_redirect_response=False)
+        self.assertRedirects(response, '/bookings/my-requests/', fetch_redirect_response=False)
 
     def test_requester_goes_to_my_requests(self):
         user = make_user('req1', group_name='Requester')
