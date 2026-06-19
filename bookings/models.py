@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -64,6 +65,14 @@ class TransportRequest(models.Model):
     # Optional note from the requester explaining why they still need a separate vehicle.
     coordination_note = models.TextField(blank=True)
     approved_date = models.DateField(null=True, blank=True)
+    # The user account that submitted this request (not necessarily the traveller).
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='submitted_requests',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,7 +1,21 @@
 import datetime
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase
+from django.urls import reverse
 from .models import Province, District, Department, TransportRequest, TripAssignment
+from .views import get_overlapping_trips
 from fleet.models import Vehicle, Driver
+
+User = get_user_model()
+
+
+def make_user(username='requester', group_name='Requester'):
+    user = User.objects.create_user(username=username, password='testpass123')
+    if group_name:
+        group, _ = Group.objects.get_or_create(name=group_name)
+        user.groups.add(group)
+    return user
 
 
 def make_province(name='Lusaka'):
@@ -234,3 +248,389 @@ class TripAssignmentModelTest(TestCase):
             transport_request=self.request, vehicle=self.vehicle, driver=self.driver
         )
         self.assertEqual(self.driver.assignments.count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Form, views, and coordination nudge tests
+# ---------------------------------------------------------------------------
+
+def _valid_post_data(province, district, department):
+    """Return a minimal valid POST dict for the transport request form."""
+    future = datetime.date.today() + datetime.timedelta(weeks=4)
+    return {
+        'requester_name': 'Alice Banda',
+        'department': str(department.pk),
+        'position': 'Officer',
+        'programme_activity': 'Field Visit',
+        'period_from': future.strftime('%Y-%m-%d'),
+        'period_to': (future + datetime.timedelta(days=3)).strftime('%Y-%m-%d'),
+        'province': str(province.pk),
+        'district': str(district.pk),
+        'destination': 'Lusaka Central',
+        'num_vehicles': '1',
+        'num_drivers': '1',
+        'num_passengers': '3',
+    }
+
+
+class TransportRequestFormTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+
+    def test_valid_form_saves(self):
+        from .forms import TransportRequestForm
+        data = _valid_post_data(self.province, self.district, self.department)
+        form = TransportRequestForm(data)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_end_before_start_invalid(self):
+        from .forms import TransportRequestForm
+        data = _valid_post_data(self.province, self.district, self.department)
+        data['period_to'] = (datetime.date.today() + datetime.timedelta(weeks=2)).strftime('%Y-%m-%d')
+        data['period_from'] = (datetime.date.today() + datetime.timedelta(weeks=3)).strftime('%Y-%m-%d')
+        form = TransportRequestForm(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('End date must be on or after the start date', str(form.errors))
+
+    def test_district_wrong_province_invalid(self):
+        from .forms import TransportRequestForm
+        other_province = Province.objects.create(name='Southern')
+        other_district = District.objects.create(name='Choma', province=other_province)
+        data = _valid_post_data(self.province, self.district, self.department)
+        # Province is Lusaka but district belongs to Southern
+        data['province'] = str(self.province.pk)
+        data['district'] = str(other_district.pk)
+        form = TransportRequestForm(data)
+        self.assertFalse(form.is_valid())
+
+    def test_district_queryset_filtered_by_province_in_data(self):
+        from .forms import TransportRequestForm
+        data = _valid_post_data(self.province, self.district, self.department)
+        form = TransportRequestForm(data)
+        self.assertIn(self.district, form.fields['district'].queryset)
+
+    def test_missing_required_field_invalid(self):
+        from .forms import TransportRequestForm
+        data = _valid_post_data(self.province, self.district, self.department)
+        del data['requester_name']
+        form = TransportRequestForm(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('requester_name', form.errors)
+
+
+class DistrictOptionsViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province('Lusaka')
+        self.district = make_district(province=self.province, name='Lusaka')
+
+    def test_returns_districts_for_province(self):
+        url = reverse('bookings:district_options')
+        response = self.client.get(url, {'province': str(self.province.pk)})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lusaka')
+
+    def test_empty_with_no_province(self):
+        url = reverse('bookings:district_options')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Lusaka')
+
+    def test_empty_with_invalid_province_id(self):
+        url = reverse('bookings:district_options')
+        response = self.client.get(url, {'province': 'abc'})
+        self.assertEqual(response.status_code, 200)
+
+
+class TransportRequestCreateViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.user = make_user()
+        self.client.login(username='requester', password='testpass123')
+        self.url = reverse('bookings:request_create')
+
+    def test_get_renders_form(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'bookings/request_form.html')
+
+    def test_unauthenticated_redirects_to_login(self):
+        self.client.logout()
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f'/accounts/login/?next={self.url}', fetch_redirect_response=False)
+
+    def test_valid_post_creates_request_no_overlap(self):
+        data = _valid_post_data(self.province, self.district, self.department)
+        response = self.client.post(self.url, data)
+        self.assertRedirects(response, reverse('bookings:my_requests'), fetch_redirect_response=False)
+        self.assertEqual(TransportRequest.objects.count(), 1)
+        req = TransportRequest.objects.first()
+        self.assertEqual(req.submitted_by, self.user)
+        self.assertEqual(req.status, 'Submitted')
+
+    def test_invalid_post_rerenders_form(self):
+        data = _valid_post_data(self.province, self.district, self.department)
+        data['requester_name'] = ''
+        response = self.client.post(self.url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'bookings/request_form.html')
+        self.assertEqual(TransportRequest.objects.count(), 0)
+
+    def test_late_booking_shows_warning_message(self):
+        data = _valid_post_data(self.province, self.district, self.department)
+        soon = datetime.date.today() + datetime.timedelta(days=5)
+        data['period_from'] = soon.strftime('%Y-%m-%d')
+        data['period_to'] = (soon + datetime.timedelta(days=2)).strftime('%Y-%m-%d')
+        response = self.client.post(self.url, data, follow=True)
+        messages = list(response.context['messages'])
+        self.assertTrue(any('2 weeks' in str(m) or 'late' in str(m).lower() for m in messages))
+
+    def test_overlap_redirects_to_nudge(self):
+        # Create an existing request to the same district in the same timeframe.
+        future = datetime.date.today() + datetime.timedelta(weeks=4)
+        make_request(
+            province=self.province, district=self.district, department=self.department,
+            period_from=future, period_to=future + datetime.timedelta(days=3),
+            status='Approved',
+        )
+        data = _valid_post_data(self.province, self.district, self.department)
+        response = self.client.post(self.url, data)
+        self.assertRedirects(response, reverse('bookings:coordination_nudge'), fetch_redirect_response=False)
+        self.assertIn('pending_request_data', self.client.session)
+
+
+class CoordinationNudgeViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.user = make_user()
+        self.client.login(username='requester', password='testpass123')
+        self.url = reverse('bookings:coordination_nudge')
+        # Seed the session with pending request data, as the create view would.
+        future = datetime.date.today() + datetime.timedelta(weeks=4)
+        self.raw_data = {
+            'requester_name': 'Alice Banda',
+            'department': str(self.department.pk),
+            'position': 'Officer',
+            'programme_activity': 'Field Visit',
+            'period_from': future.strftime('%Y-%m-%d'),
+            'period_to': (future + datetime.timedelta(days=3)).strftime('%Y-%m-%d'),
+            'province': str(self.province.pk),
+            'district': str(self.district.pk),
+            'destination': 'Lusaka Central',
+            'num_vehicles': '1',
+            'num_drivers': '1',
+            'num_passengers': '3',
+        }
+        self.overlap = make_request(
+            province=self.province, district=self.district, department=self.department,
+            period_from=future, period_to=future + datetime.timedelta(days=3),
+            status='Approved',
+        )
+
+    def _seed_session(self):
+        session = self.client.session
+        session['pending_request_data'] = self.raw_data
+        session['overlapping_trip_ids'] = [self.overlap.pk]
+        session['pending_request_is_late'] = False
+        session.save()
+
+    def test_get_without_session_redirects_to_form(self):
+        response = self.client.get(self.url)
+        self.assertRedirects(response, reverse('bookings:request_create'), fetch_redirect_response=False)
+
+    def test_get_with_session_renders_nudge_page(self):
+        self._seed_session()
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'bookings/coordination_nudge.html')
+
+    def test_post_without_acknowledgment_shows_error(self):
+        self._seed_session()
+        response = self.client.post(self.url, {'coordination_note': 'needed'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TransportRequest.objects.exclude(pk=self.overlap.pk).count(), 0)
+
+    def test_post_with_acknowledgment_creates_request(self):
+        self._seed_session()
+        response = self.client.post(self.url, {
+            'acknowledged': 'on',
+            'coordination_note': 'Different programme requirement.',
+        })
+        self.assertRedirects(response, reverse('bookings:my_requests'), fetch_redirect_response=False)
+        new_requests = TransportRequest.objects.exclude(pk=self.overlap.pk)
+        self.assertEqual(new_requests.count(), 1)
+        req = new_requests.first()
+        self.assertTrue(req.coordination_acknowledged)
+        self.assertEqual(req.coordination_note, 'Different programme requirement.')
+
+    def test_session_cleared_after_save(self):
+        self._seed_session()
+        self.client.post(self.url, {'acknowledged': 'on', 'coordination_note': ''})
+        session = self.client.session
+        self.assertNotIn('pending_request_data', session)
+
+
+class GetOverlappingTripsTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.other_district = make_district(province=self.province, name='Kafue')
+        self.future = datetime.date.today() + datetime.timedelta(weeks=4)
+
+    def test_same_district_within_window_triggers_nudge(self):
+        make_request(
+            province=self.province, district=self.district,
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=2),
+            status='Approved',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 1)
+
+    def test_different_district_does_not_trigger(self):
+        make_request(
+            province=self.province, district=self.other_district,
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=2),
+            status='Approved',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 0)
+
+    def test_completed_request_does_not_trigger(self):
+        make_request(
+            province=self.province, district=self.district,
+            period_from=self.future, period_to=self.future + datetime.timedelta(days=2),
+            status='Completed',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 0)
+
+    def test_far_future_trip_does_not_trigger(self):
+        # A trip 30 days away should not trigger the 7-day window nudge.
+        far = self.future + datetime.timedelta(days=30)
+        make_request(
+            province=self.province, district=self.district,
+            period_from=far, period_to=far + datetime.timedelta(days=2),
+            status='Approved',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 0)
+
+    def test_trip_just_inside_window_triggers(self):
+        # A trip starting exactly 7 days after our end date — just inside the window.
+        nearby = self.future + datetime.timedelta(days=3 + 7)  # period_to + 3 days + window
+        make_request(
+            province=self.province, district=self.district,
+            period_from=nearby, period_to=nearby + datetime.timedelta(days=1),
+            status='Submitted',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=3))
+        self.assertEqual(result.count(), 1)
+
+
+class MyRequestsViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.user = make_user()
+        self.other_user = make_user(username='other', group_name='Requester')
+        self.url = reverse('bookings:my_requests')
+
+    def test_unauthenticated_redirects(self):
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f'/accounts/login/?next={self.url}', fetch_redirect_response=False)
+
+    def test_shows_only_own_requests(self):
+        own = make_request(province=self.province, district=self.district, submitted_by=self.user)
+        make_request(province=self.province, district=self.district, submitted_by=self.other_user)
+        self.client.login(username='requester', password='testpass123')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        requests_in_context = list(response.context['requests'])
+        self.assertEqual(len(requests_in_context), 1)
+        self.assertEqual(requests_in_context[0], own)
+
+    def test_empty_state_rendered(self):
+        self.client.login(username='requester', password='testpass123')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'No requests yet')
+
+
+class TransportRequestDetailViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.user = make_user()
+        self.other_user = make_user(username='other', group_name='Requester')
+        self.req = make_request(
+            province=self.province, district=self.district,
+            submitted_by=self.user,
+        )
+
+    def test_owner_can_view(self):
+        self.client.login(username='requester', password='testpass123')
+        url = reverse('bookings:request_detail', args=[self.req.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_other_user_gets_404(self):
+        self.client.login(username='other', password='testpass123')
+        url = reverse('bookings:request_detail', args=[self.req.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_fleet_manager_can_view_any(self):
+        manager = make_user(username='manager', group_name='Fleet Manager')
+        self.client.login(username='manager', password='testpass123')
+        url = reverse('bookings:request_detail', args=[self.req.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+class TransportRequestCancelViewTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.user = make_user()
+        self.req = make_request(
+            province=self.province, district=self.district,
+            submitted_by=self.user,
+        )
+        self.client.login(username='requester', password='testpass123')
+
+    def _cancel(self):
+        return self.client.post(reverse('bookings:request_cancel', args=[self.req.pk]))
+
+    def test_cancel_submitted_request(self):
+        self._cancel()
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.status, 'Cancelled')
+
+    def test_cancel_completed_request_rejected(self):
+        self.req.status = 'Completed'
+        self.req.save()
+        self._cancel()
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.status, 'Completed')
+
+    def test_other_user_cannot_cancel(self):
+        other = make_user(username='other2', group_name='Requester')
+        self.client.login(username='other2', password='testpass123')
+        self.client.post(reverse('bookings:request_cancel', args=[self.req.pk]))
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.status, 'Submitted')

@@ -25,8 +25,9 @@
                 {% if is_fleet_manager or is_superadmin %}
                 {# Phase 4: Request Queue link #}
                 {% endif %}
-                {% if is_requester or is_superadmin %}
-                {# Phase 3: My Requests link #}
+                {% if is_requester or is_fleet_manager or is_superadmin %}
+                <li><a href="{% url 'bookings:request_create' %}" class="font-medium">New Request</a></li>
+                <li><a href="{% url 'bookings:my_requests' %}" class="font-medium">My Requests</a></li>
                 {% endif %}
                 {% if is_fleet_manager or is_dashboard_viewer or is_superadmin %}
                 {# Phase 6: Gantt link #}
