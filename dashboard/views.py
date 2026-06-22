@@ -347,23 +347,27 @@ class DashboardView(GroupRequiredMixin, View):
         cost_per_trip = round(float(total_cost) / max(1, completed_in_period), 2)
         cost_per_vehicle = round(float(total_cost) / max(1, vehicle_count), 2)
 
-        # Projected maintenance: vehicles expected to reach their service interval
-        # within the next 3 months, based on their observed km/month rate.
+        # Projected maintenance across four planning horizons (1 / 3 / 6 / 12 months).
+        # For each vehicle we estimate how many months until its next service is due,
+        # then bucket it into whichever horizons it falls within.
         avg_maint_cost = (
             MaintenanceRecord.objects.aggregate(avg=Avg('cost'))['avg'] or Decimal('5000')
         )
-        projected_list = []
+        avg_maint_cost_float = float(avg_maint_cost)
+
+        # Collect every vehicle that has a km_until_service value.
+        # Overdue vehicles (km_remaining <= 0) count as months=0 for all horizons.
+        vehicles_with_months = []
         for v in vehicles:
             km_remaining = v.km_until_service
             if km_remaining is None:
                 continue
             if km_remaining <= 0:
-                # Already overdue — flag as urgent, months = 0
-                projected_list.append({'vehicle': v, 'months': 0, 'urgent': True})
+                vehicles_with_months.append({'vehicle': v, 'months': 0, 'urgent': True})
                 continue
 
-            # Estimate monthly km rate from fuel fill-up mileage records when available.
-            # Fall back to a lifetime average derived from the vehicle's build year.
+            # Prefer fill-up mileage records for the km/month estimate;
+            # fall back to a lifetime average from the build year if fewer than 2 exist.
             fuel_recs = sorted(v.fuel_records.all(), key=lambda r: r.date)
             if len(fuel_recs) >= 2:
                 km_span = fuel_recs[-1].mileage_at_fillup - fuel_recs[0].mileage_at_fillup
@@ -375,14 +379,35 @@ class DashboardView(GroupRequiredMixin, View):
 
             if km_per_month > 0:
                 months_to_service = km_remaining / km_per_month
-                if months_to_service <= 3:
-                    projected_list.append({
+                # Collect up to 12 months out — covers the widest planning horizon
+                if months_to_service <= 12:
+                    vehicles_with_months.append({
                         'vehicle': v,
                         'months': round(months_to_service, 1),
                         'urgent': False,
                     })
 
-        projected_cost = round(float(avg_maint_cost) * len(projected_list), 2)
+        # Build per-horizon summary for the template's horizon switcher
+        _HORIZONS = [
+            {'months': 1,  'label': '1 month',   'short': '1m'},
+            {'months': 3,  'label': '3 months',  'short': '3m'},
+            {'months': 6,  'label': '6 months',  'short': '6m'},
+            {'months': 12, 'label': '12 months', 'short': '12m'},
+        ]
+        projection_horizons = []
+        for h in _HORIZONS:
+            due = [p for p in vehicles_with_months if p['months'] <= h['months']]
+            projection_horizons.append({
+                'months':        h['months'],
+                'label':         h['label'],
+                'short':         h['short'],
+                'vehicle_count': len(due),
+                'cost':          round(avg_maint_cost_float * len(due)),
+            })
+
+        # Keep a backwards-compatible alias used by existing tests (3-month bucket)
+        projected_list = [p for p in vehicles_with_months if p['months'] <= 3]
+        projected_cost = round(avg_maint_cost_float * len(projected_list))
 
         # Month toggle — one button per calendar month present in the full dataset.
         # Advance by adding 4 days past the 28th to reliably cross into the next month.
@@ -441,6 +466,7 @@ class DashboardView(GroupRequiredMixin, View):
             'cost_per_vehicle': cost_per_vehicle,
             'projected_list': projected_list,
             'projected_cost': projected_cost,
+            'projection_horizons': projection_horizons,
             'avg_maint_cost': round(float(avg_maint_cost), 2),
             # Map
             'available_months': available_months,

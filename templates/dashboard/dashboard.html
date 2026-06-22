@@ -36,8 +36,8 @@
   </div>
 </div>
 
-<!-- ── KPI Grid ──────────────────────────────────────────────────────────── -->
-<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+<!-- ── KPI Grid: 3 summary panels ────────────────────────────────────────── -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
 
   <!-- Panel 1: Fleet Utilisation -->
   <div class="card bg-base-100 shadow-sm border border-base-300">
@@ -110,7 +110,6 @@
     <div class="card-body p-4">
       <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">Maintenance Health</p>
 
-      <!-- Traffic light summary -->
       <div class="flex gap-3 mt-2 mb-3">
         <div class="text-center">
           <div class="text-2xl font-bold text-success">{{ green_count }}</div>
@@ -153,50 +152,85 @@
     </div>
   </div>
 
-  <!-- Panel 4: Finance -->
-  <div class="card bg-base-100 shadow-sm border border-base-300">
-    <div class="card-body p-4">
-      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">Finance</p>
-      <p class="text-4xl font-bold tabular-nums text-primary mt-1">
-        ZMW {{ total_cost|floatformat:0 }}
-      </p>
-      <p class="text-sm text-base-content/60">total spend</p>
+</div>
 
-      <div class="mt-3 space-y-1 text-sm">
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Fuel</span>
-          <span class="font-semibold">ZMW {{ fuel_total|floatformat:0 }}</span>
-        </div>
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Maintenance</span>
-          <span class="font-semibold">ZMW {{ finance_maint_total|floatformat:0 }}</span>
-        </div>
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Cost per trip</span>
-          <span class="font-semibold">ZMW {{ cost_per_trip|floatformat:0 }}</span>
-        </div>
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Cost per vehicle</span>
-          <span class="font-semibold">ZMW {{ cost_per_vehicle|floatformat:0 }}</span>
+<!-- ── Finance panel — own row so expanding the footnote doesn't stretch siblings ── -->
+<div class="card bg-base-100 shadow-sm border border-base-300 mb-6">
+  <div class="card-body p-4">
+    <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-3">Finance</p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+
+      <!-- Left column: actuals -->
+      <div>
+        <p class="text-4xl font-bold tabular-nums text-primary">ZMW {{ total_cost|floatformat:0 }}</p>
+        <p class="text-sm text-base-content/60 mb-3">total spend this period</p>
+        <div class="space-y-1 text-sm">
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Fuel</span>
+            <span class="font-semibold">ZMW {{ fuel_total|floatformat:0 }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Maintenance</span>
+            <span class="font-semibold">ZMW {{ finance_maint_total|floatformat:0 }}</span>
+          </div>
+          <div class="divider my-1"></div>
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Cost per trip</span>
+            <span class="font-semibold">ZMW {{ cost_per_trip|floatformat:0 }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Cost per vehicle</span>
+            <span class="font-semibold">ZMW {{ cost_per_vehicle|floatformat:0 }}</span>
+          </div>
         </div>
       </div>
 
-      {% if projected_list %}
-      <div class="divider my-2 text-xs">Projected next 3 months</div>
-      <div class="text-sm space-y-1">
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Vehicles due service</span>
-          <span class="font-semibold">{{ projected_list|length }}</span>
+      <!-- Right column: projected maintenance -->
+      <div>
+        <p class="text-sm font-semibold text-base-content mb-2">Projected maintenance</p>
+
+        <!-- Horizon selector -->
+        <div class="flex gap-1 flex-wrap mb-3">
+          {% for h in projection_horizons %}
+          <button
+            class="btn btn-xs proj-horizon-btn {% if forloop.first %}btn-primary{% else %}btn-outline{% endif %}"
+            data-count="{{ h.vehicle_count }}"
+            data-cost="{{ h.cost }}"
+            data-label="{{ h.label }}">
+            {{ h.short }}
+          </button>
+          {% endfor %}
         </div>
-        <div class="flex justify-between">
-          <span class="text-base-content/60">Est. maintenance cost</span>
-          <span class="font-semibold text-warning">ZMW {{ projected_cost|floatformat:0 }}</span>
+
+        <div class="space-y-1 text-sm">
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Vehicles due in <span id="proj-horizon-label">{{ projection_horizons.0.label }}</span></span>
+            <span id="proj-vehicle-count" class="font-semibold">{{ projection_horizons.0.vehicle_count }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-base-content/60">Est. maintenance cost</span>
+            <span class="font-semibold text-warning">ZMW <span id="proj-cost-val">{{ projection_horizons.0.cost }}</span></span>
+          </div>
         </div>
+
+        <!-- Formula footnote -->
+        <details class="mt-3">
+          <summary class="text-xs text-base-content/40 cursor-pointer select-none hover:text-base-content/70 transition-colors">
+            &#x2139; How is this estimated?
+          </summary>
+          <div class="text-xs text-base-content/55 mt-2 leading-relaxed space-y-1.5 border-l-2 border-base-300 pl-2">
+            <p><strong>km remaining</strong> = (last service mileage + maintenance interval) &minus; current mileage</p>
+            <p><strong>Monthly km rate</strong>: derived from fill-up mileage records when &ge;2 exist (mileage difference &divide; days &times; 30.4). Falls back to vehicle lifetime average (total mileage &divide; months since build year) if fewer records exist.</p>
+            <p><strong>Months to service</strong> = km remaining &divide; monthly km rate</p>
+            <p><strong>Estimated cost per service</strong>: fleet average of all historical maintenance records &mdash; currently ZMW {{ avg_maint_cost|floatformat:0 }}.</p>
+            <p class="text-base-content/40">Overdue vehicles (km remaining &lt; 0) are counted immediately in all horizons.</p>
+          </div>
+        </details>
       </div>
-      {% endif %}
+
     </div>
   </div>
-
 </div>
 
 <!-- ── Trip Patterns ─────────────────────────────────────────────────────── -->
@@ -390,5 +424,24 @@ async function loadMap(month) {
 }
 
 document.addEventListener('DOMContentLoaded', () => loadMap(null));
+</script>
+
+<script>
+// ── Finance projection horizon switcher ─────────────────────────────────────
+document.querySelectorAll('.proj-horizon-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.proj-horizon-btn').forEach(b => {
+      b.classList.remove('btn-primary');
+      b.classList.add('btn-outline');
+    });
+    btn.classList.add('btn-primary');
+    btn.classList.remove('btn-outline');
+
+    document.getElementById('proj-horizon-label').textContent = btn.dataset.label;
+    document.getElementById('proj-vehicle-count').textContent  = btn.dataset.count;
+    document.getElementById('proj-cost-val').textContent =
+      parseInt(btn.dataset.cost, 10).toLocaleString();
+  });
+});
 </script>
 {% endblock %}
