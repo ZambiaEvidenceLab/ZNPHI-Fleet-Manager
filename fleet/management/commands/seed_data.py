@@ -369,19 +369,18 @@ class Command(BaseCommand):
 
         requests = []
 
-        def _status_for_date(period_from):
-            """Return the appropriate status for a historical trip start date."""
-            # Beyond the visible 2-week horizon → pending in the approval queue.
-            if period_from > datetime.date(2026, 7, 5):
-                return 'Submitted'
-            # Current/upcoming fortnight → approved and visible on the Gantt.
-            if period_from >= datetime.date(2026, 6, 22):
-                return 'Approved'
-            # Last week → trips that just finished or are wrapping up.
-            if period_from >= datetime.date(2026, 6, 15):
-                return rng.choice(['In Progress', 'Completed', 'Completed'])
-            if period_from >= datetime.date(2026, 6, 1):
-                return rng.choice(['Approved', 'In Progress', 'Completed', 'Completed', 'Completed'])
+        def _status_for_date(period_from, period_to):
+            """Return a realistic status based on where the trip falls relative to SEED_TODAY."""
+            # Future: not yet started.
+            if period_from > SEED_TODAY:
+                # Far-future requests sit in the approval queue; near-future ones are confirmed.
+                return 'Submitted' if period_from > datetime.date(2026, 7, 5) else 'Approved'
+
+            # Currently active: started on or before today, ends today or later.
+            if period_to >= SEED_TODAY:
+                return 'In Progress'
+
+            # Past: trip has fully ended — mostly completed, small rejection/cancellation rate.
             r = rng.random()
             if r < 0.08:
                 return 'Rejected'
@@ -468,7 +467,7 @@ class Command(BaseCommand):
                 for _ in range(daily_count):
                     period_from = current + datetime.timedelta(days=rng.randint(3, 21))
                     period_to   = period_from + datetime.timedelta(days=rng.randint(1, 5))
-                    status      = _status_for_date(period_from)
+                    status      = _status_for_date(period_from, period_to)
                     is_emerg    = rng.random() < 0.08
                     requests.append(
                         _make_request(period_from, period_to, status,
@@ -484,7 +483,7 @@ class Command(BaseCommand):
                 day_offset  = rng.randint(0, 4)     # Mon–Fri of that week
                 period_from = week_start + datetime.timedelta(days=day_offset)
                 period_to   = period_from + datetime.timedelta(days=rng.randint(1, 3))
-                status      = _status_for_date(period_from)
+                status      = _status_for_date(period_from, period_to)
                 requests.append(
                     _make_request(period_from, period_to, status,
                                   rng.choice(users), prov_name=prov_name,

@@ -40,7 +40,7 @@
                 <li><a href="{% url 'fleet:vehicle_list' %}" class="font-medium">Vehicles</a></li>
                 <li><a href="{% url 'fleet:driver_list' %}" class="font-medium">Drivers</a></li>
                 <li><a href="{% url 'dashboard:gantt' %}" class="font-medium">Gantt</a></li>
-                {# Phase 7: Dashboard link #}
+                <li><a href="{% url 'dashboard:dashboard' %}" class="font-medium">Dashboard</a></li>
                 {% endif %}
                 {% if is_superadmin %}
                 <li><a href="{% url 'accounts:user_list' %}" class="font-medium">User Management</a></li>
@@ -106,5 +106,6 @@
         <span>ZNPHI Fleet Manager &mdash; Zambia National Public Health Institute</span>
     </footer>
 
+    {% block extra_scripts %}{% endblock %}
 </body>
 </html>
