@@ -57,6 +57,12 @@ Build in this order. Each phase produces working, testable functionality.
 - Build the pending request badge count in the navbar.
 - Write tests: availability filtering, buffer logic, assignment creation, status transitions.
 
+### Phase 4.5: Seed data (pulled forward from Phase 9)
+- Build the `seed_data` management command generating all synthetic data as specified in the construction guide.
+- Build the `flush_seed` management command to clear synthetic data.
+- Rationale: all 7 models exist; having realistic data from this point forward lets each subsequent phase be validated against a populated UI rather than empty screens. Statuses that depend on auto-transitions (Phase 8) are set directly in the seed command.
+- UI polish, final test pass, and the "run full seed + test all views" sign-off remain in Phase 9.
+
 ### Phase 5: Vehicle and maintenance management
 - Build the Vehicles & Maintenance list view (table with traffic lights).
 - Build the vehicle detail view: edit vehicle info, update mileage, fuel log (list + add form), maintenance history (list + add form), upcoming bookings, schedule maintenance.
@@ -87,12 +93,11 @@ Build in this order. Each phase produces working, testable functionality.
 - CSV export buttons on key list views.
 - Write tests: settings persistence, status auto-transition logic, CSV export.
 
-### Phase 9: Synthetic data and polish
-- Build the `seed_data` management command generating all synthetic data as specified in the construction guide.
-- Build the `flush_seed` management command to clear synthetic data.
+### Phase 9: Polish and final sign-off
 - Run full seed, test all views with populated data.
 - UI polish: consistent spacing, color application, navbar behavior across roles.
 - Final test pass.
+- Note: `seed_data` and `flush_seed` commands were built in Phase 4.5.
 
 ## Coding Standards
 
