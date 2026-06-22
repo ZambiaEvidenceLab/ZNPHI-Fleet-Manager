@@ -209,10 +209,10 @@ class Command(BaseCommand):
         drivers = [
             Driver.objects.create(
                 name=name,
-                phone=f'+260 97{rng.randint(1_000_000, 9_999_999)}',
+                phone=f'+260 970 000 {i:03d}',
                 status=status,
             )
-            for name, status in DRIVER_SPECS
+            for i, (name, status) in enumerate(DRIVER_SPECS)
         ]
         self.stdout.write(f'  {len(drivers)} drivers')
         return drivers
