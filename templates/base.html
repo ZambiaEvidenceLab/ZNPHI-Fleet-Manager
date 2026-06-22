@@ -37,6 +37,8 @@
                 <li><a href="{% url 'bookings:my_requests' %}" class="font-medium">My Requests</a></li>
                 {% endif %}
                 {% if is_fleet_manager or is_dashboard_viewer or is_superadmin %}
+                <li><a href="{% url 'fleet:vehicle_list' %}" class="font-medium">Vehicles</a></li>
+                <li><a href="{% url 'fleet:driver_list' %}" class="font-medium">Drivers</a></li>
                 {# Phase 6: Gantt link #}
                 {# Phase 7: Dashboard link #}
                 {% endif %}

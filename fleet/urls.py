@@ -1,5 +1,15 @@
 from django.urls import path
 
+from . import views
+
 app_name = 'fleet'
 
-urlpatterns = []
+urlpatterns = [
+    path('vehicles/', views.VehicleListView.as_view(), name='vehicle_list'),
+    path('vehicles/<int:pk>/', views.VehicleDetailView.as_view(), name='vehicle_detail'),
+    path('vehicles/<int:pk>/edit/', views.VehicleEditView.as_view(), name='vehicle_edit'),
+    path('vehicles/<int:pk>/fuel/add/', views.fuel_record_add, name='fuel_record_add'),
+    path('vehicles/<int:pk>/maintenance/add/', views.maintenance_record_add, name='maintenance_record_add'),
+    path('drivers/', views.DriverListView.as_view(), name='driver_list'),
+    path('drivers/<int:pk>/edit/', views.DriverEditView.as_view(), name='driver_edit'),
+]

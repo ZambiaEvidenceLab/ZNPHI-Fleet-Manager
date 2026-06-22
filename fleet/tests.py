@@ -1,6 +1,12 @@
 import datetime
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase
-from .models import Vehicle, Driver, FuelRecord, MaintenanceRecord
+from django.urls import reverse
+
+from .models import Driver, FuelRecord, MaintenanceRecord, Vehicle
+
+User = get_user_model()
 
 
 def make_vehicle(**kwargs):
@@ -24,6 +30,13 @@ def make_driver(**kwargs):
     defaults = dict(name='Driver 1', phone='', status='Available')
     defaults.update(kwargs)
     return Driver.objects.create(**defaults)
+
+
+def make_user(username, group_name):
+    user = User.objects.create_user(username=username, password='testpass123')
+    group, _ = Group.objects.get_or_create(name=group_name)
+    user.groups.add(group)
+    return user
 
 
 class VehicleModelTest(TestCase):
@@ -52,9 +65,8 @@ class VehicleModelTest(TestCase):
         self.assertEqual(v.maintenance_status, 'green')
 
     def test_maintenance_status_amber(self):
-        v = make_vehicle(current_mileage=50300, maintenance_interval_km=5000,
+        v = make_vehicle(current_mileage=50000, maintenance_interval_km=5000,
                          last_service_mileage=46000)
-        # km_until_service = 51000 - 50300 = 700... wait, 46000+5000=51000, 51000-50300=700 → green
         # Let's make it tighter: last_service=45600, interval=5000 → next=50600, current=50200 → 400 → amber
         v.last_service_mileage = 45600
         v.current_mileage = 50200
@@ -235,3 +247,213 @@ class MaintenanceRecordModelTest(TestCase):
         self.vehicle.refresh_from_db()
         # km_until_service = (50000 + 5000) - 50000 = 5000 → green
         self.assertEqual(self.vehicle.maintenance_status, 'green')
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Vehicle and maintenance management — new tests
+# ---------------------------------------------------------------------------
+
+class MaintenanceBlockingTest(TestCase):
+    """Phase 4's get_available_vehicles() must exclude overdue vehicles."""
+
+    def test_overdue_vehicle_excluded_from_availability(self):
+        from bookings.views import get_available_vehicles
+
+        overdue = make_vehicle(
+            license_plate='ZM OVERDUE',
+            current_mileage=55000,
+            last_service_mileage=49000,
+            maintenance_interval_km=5000,
+        )
+        # km_until_service = (49000 + 5000) - 55000 = -1000 → red/overdue
+        self.assertEqual(overdue.maintenance_status, 'red')
+
+        period_from = datetime.date.today() + datetime.timedelta(days=7)
+        period_to = period_from + datetime.timedelta(days=2)
+        available = get_available_vehicles(period_from, period_to)
+
+        self.assertNotIn(overdue, list(available))
+
+    def test_green_vehicle_not_blocked(self):
+        from bookings.views import get_available_vehicles
+
+        good = make_vehicle(
+            license_plate='ZM GOOD',
+            current_mileage=50000,
+            last_service_mileage=46000,
+            maintenance_interval_km=5000,
+        )
+        # km_until_service = 1000 → green
+        self.assertEqual(good.maintenance_status, 'green')
+
+        period_from = datetime.date.today() + datetime.timedelta(days=7)
+        period_to = period_from + datetime.timedelta(days=2)
+        available = get_available_vehicles(period_from, period_to)
+
+        self.assertIn(good, list(available))
+
+    def test_vehicle_with_no_service_record_not_blocked(self):
+        """Unknown maintenance status is not treated as overdue."""
+        from bookings.views import get_available_vehicles
+
+        v = make_vehicle(license_plate='ZM NOSVC', last_service_mileage=None)
+        self.assertEqual(v.maintenance_status, 'unknown')
+
+        period_from = datetime.date.today() + datetime.timedelta(days=7)
+        period_to = period_from + datetime.timedelta(days=2)
+        available = get_available_vehicles(period_from, period_to)
+
+        self.assertIn(v, list(available))
+
+
+class MaintenanceStatusAutoFlipTest(TestCase):
+    """Logging a MaintenanceRecord for an 'In Maintenance' vehicle must flip it to 'Available'."""
+
+    def setUp(self):
+        self.fm = make_user('fleet_mgr', 'Fleet Manager')
+        self.vehicle = make_vehicle(
+            license_plate='ZM MAINT',
+            status='In Maintenance',
+            current_mileage=60000,
+            last_service_mileage=54000,
+            maintenance_interval_km=5000,
+        )
+
+    def test_maintenance_record_flips_status_to_available(self):
+        self.client.login(username='fleet_mgr', password='testpass123')
+        response = self.client.post(
+            reverse('fleet:maintenance_record_add', kwargs={'pk': self.vehicle.pk}),
+            {
+                'date': '2026-06-20',
+                'mileage_at_service': '60000',
+                'service_type': 'Full service',
+                'cost': '1500.00',
+                'vendor': 'Toyota Zambia',
+                'notes': '',
+            },
+        )
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, 'Available')
+        self.assertRedirects(response, reverse('fleet:vehicle_detail', kwargs={'pk': self.vehicle.pk}))
+
+    def test_maintenance_record_does_not_flip_emergency_standby(self):
+        """Emergency Standby status is set manually and must not be overridden."""
+        self.vehicle.status = 'Emergency Standby'
+        self.vehicle.save()
+        self.client.login(username='fleet_mgr', password='testpass123')
+        self.client.post(
+            reverse('fleet:maintenance_record_add', kwargs={'pk': self.vehicle.pk}),
+            {
+                'date': '2026-06-20',
+                'mileage_at_service': '60000',
+                'service_type': 'Oil change',
+                'cost': '500.00',
+                'vendor': 'Garage',
+                'notes': '',
+            },
+        )
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, 'Emergency Standby')
+
+    def test_maintenance_record_updates_baseline(self):
+        self.client.login(username='fleet_mgr', password='testpass123')
+        self.client.post(
+            reverse('fleet:maintenance_record_add', kwargs={'pk': self.vehicle.pk}),
+            {
+                'date': '2026-06-20',
+                'mileage_at_service': '60000',
+                'service_type': 'Full service',
+                'cost': '1500.00',
+                'vendor': 'Toyota Zambia',
+                'notes': '',
+            },
+        )
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.last_service_mileage, 60000)
+        self.assertEqual(self.vehicle.last_service_date, datetime.date(2026, 6, 20))
+
+
+class VehicleViewAccessTest(TestCase):
+    """Role-based access control for fleet views."""
+
+    def setUp(self):
+        self.vehicle = make_vehicle(license_plate='ZM ACCESS')
+        self.fm = make_user('fleet_mgr', 'Fleet Manager')
+        self.viewer = make_user('dash_viewer', 'Dashboard Viewer')
+        self.requester = make_user('requester', 'Requester')
+
+    def test_vehicle_list_accessible_to_fleet_manager(self):
+        self.client.login(username='fleet_mgr', password='testpass123')
+        response = self.client.get(reverse('fleet:vehicle_list'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_vehicle_list_accessible_to_dashboard_viewer(self):
+        self.client.login(username='dash_viewer', password='testpass123')
+        response = self.client.get(reverse('fleet:vehicle_list'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_vehicle_list_forbidden_to_requester(self):
+        self.client.login(username='requester', password='testpass123')
+        response = self.client.get(reverse('fleet:vehicle_list'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_vehicle_edit_forbidden_to_dashboard_viewer(self):
+        self.client.login(username='dash_viewer', password='testpass123')
+        response = self.client.get(reverse('fleet:vehicle_edit', kwargs={'pk': self.vehicle.pk}))
+        self.assertEqual(response.status_code, 403)
+
+    def test_vehicle_edit_accessible_to_fleet_manager(self):
+        self.client.login(username='fleet_mgr', password='testpass123')
+        response = self.client.get(reverse('fleet:vehicle_edit', kwargs={'pk': self.vehicle.pk}))
+        self.assertEqual(response.status_code, 200)
+
+    def test_fuel_record_add_forbidden_to_dashboard_viewer(self):
+        self.client.login(username='dash_viewer', password='testpass123')
+        response = self.client.post(
+            reverse('fleet:fuel_record_add', kwargs={'pk': self.vehicle.pk}), {}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_unauthenticated_redirected_to_login(self):
+        response = self.client.get(reverse('fleet:vehicle_list'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/accounts/login/', response['Location'])
+
+
+class DriverViewAccessTest(TestCase):
+
+    def setUp(self):
+        self.driver = make_driver(name='Driver Test')
+        self.fm = make_user('fleet_mgr2', 'Fleet Manager')
+        self.viewer = make_user('dash_viewer2', 'Dashboard Viewer')
+        self.requester = make_user('requester2', 'Requester')
+
+    def test_driver_list_accessible_to_fleet_manager(self):
+        self.client.login(username='fleet_mgr2', password='testpass123')
+        response = self.client.get(reverse('fleet:driver_list'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_driver_list_accessible_to_dashboard_viewer(self):
+        self.client.login(username='dash_viewer2', password='testpass123')
+        response = self.client.get(reverse('fleet:driver_list'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_driver_list_forbidden_to_requester(self):
+        self.client.login(username='requester2', password='testpass123')
+        response = self.client.get(reverse('fleet:driver_list'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_driver_edit_forbidden_to_dashboard_viewer(self):
+        self.client.login(username='dash_viewer2', password='testpass123')
+        response = self.client.get(reverse('fleet:driver_edit', kwargs={'pk': self.driver.pk}))
+        self.assertEqual(response.status_code, 403)
+
+    def test_driver_edit_saves_status_change(self):
+        self.client.login(username='fleet_mgr2', password='testpass123')
+        response = self.client.post(
+            reverse('fleet:driver_edit', kwargs={'pk': self.driver.pk}),
+            {'name': 'Driver Test', 'phone': '', 'status': 'On Leave'},
+        )
+        self.driver.refresh_from_db()
+        self.assertEqual(self.driver.status, 'On Leave')
+        self.assertRedirects(response, reverse('fleet:driver_list'))
