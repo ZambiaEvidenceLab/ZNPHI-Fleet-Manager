@@ -152,7 +152,7 @@ MAINTENANCE_VENDORS = [
 
 # ── Date windows ───────────────────────────────────────────────────────────────
 SEED_START  = datetime.date(2026, 3, 2)
-SEED_END    = datetime.date(2026, 6, 14)   # last date we generate requests from
+SEED_END    = datetime.date(2026, 6, 21)   # last date we generate requests from
 SEED_TODAY  = datetime.date(2026, 6, 22)   # "now" for the seed data world
 SPIKE_WEEK  = datetime.date(2026, 4, 6)    # Mon of the ~50-request spike week
 
@@ -371,8 +371,15 @@ class Command(BaseCommand):
 
         def _status_for_date(period_from):
             """Return the appropriate status for a historical trip start date."""
-            if period_from >= datetime.date(2026, 6, 15):
+            # Beyond the visible 2-week horizon → pending in the approval queue.
+            if period_from > datetime.date(2026, 7, 5):
                 return 'Submitted'
+            # Current/upcoming fortnight → approved and visible on the Gantt.
+            if period_from >= datetime.date(2026, 6, 22):
+                return 'Approved'
+            # Last week → trips that just finished or are wrapping up.
+            if period_from >= datetime.date(2026, 6, 15):
+                return rng.choice(['In Progress', 'Completed', 'Completed'])
             if period_from >= datetime.date(2026, 6, 1):
                 return rng.choice(['Approved', 'In Progress', 'Completed', 'Completed', 'Completed'])
             r = rng.random()
