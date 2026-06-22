@@ -74,14 +74,14 @@ DRIVER_SPECS = [
 # ── Seed requester accounts ────────────────────────────────────────────────────
 # Columns: username, first_name, last_name, position
 REQUESTER_DATA = [
-    ('seed_chanda.mutale',   'Chanda',    'Mutale',   'Surveillance Officer'),
-    ('seed_bwalya.musonda',  'Bwalya',    'Musonda',  'Field Epidemiologist'),
-    ('seed_thandiwe.phiri',  'Thandiwe',  'Phiri',    'Public Health Specialist'),
-    ('seed_mwansa.kapata',   'Mwansa',    'Kapata',   'Laboratory Technician'),
-    ('seed_abel.zulu',       'Abel',      'Zulu',     'Disease Intelligence Analyst'),
-    ('seed_grace.nkonde',    'Grace',     'Nkonde',   'Programme Officer'),
-    ('seed_henry.tembo',     'Henry',     'Tembo',    'Emergency Response Coordinator'),
-    ('seed_faith.banda',     'Faith',     'Banda',    'Health Policy Advisor'),
+    ('seed_staff_1', 'ZNPHI Staff', '1', 'Surveillance Officer'),
+    ('seed_staff_2', 'ZNPHI Staff', '2', 'Field Epidemiologist'),
+    ('seed_staff_3', 'ZNPHI Staff', '3', 'Public Health Specialist'),
+    ('seed_staff_4', 'ZNPHI Staff', '4', 'Laboratory Technician'),
+    ('seed_staff_5', 'ZNPHI Staff', '5', 'Disease Intelligence Analyst'),
+    ('seed_staff_6', 'ZNPHI Staff', '6', 'Programme Officer'),
+    ('seed_staff_7', 'ZNPHI Staff', '7', 'Emergency Response Coordinator'),
+    ('seed_staff_8', 'ZNPHI Staff', '8', 'Health Policy Advisor'),
 ]
 
 # ── Transport request content ──────────────────────────────────────────────────
