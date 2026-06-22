@@ -80,7 +80,7 @@ class DistrictOptionsView(View):
 
 
 class TransportRequestCreateView(GroupRequiredMixin, View):
-    group_required = ['Requester', 'Fleet Manager', 'Superadmin']
+    group_required = ['Requester', 'Fleet Manager', 'Dashboard Viewer', 'Superadmin']
     template_name = 'bookings/request_form.html'
 
     def get(self, request):
@@ -193,7 +193,7 @@ class CoordinationNudgeView(LoginRequiredMixin, View):
 
 
 class MyRequestsView(GroupRequiredMixin, ListView):
-    group_required = ['Requester', 'Fleet Manager', 'Superadmin']
+    group_required = ['Requester', 'Fleet Manager', 'Dashboard Viewer', 'Superadmin']
     template_name = 'bookings/my_requests.html'
     context_object_name = 'requests'
 
