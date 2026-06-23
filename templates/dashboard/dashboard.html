@@ -26,13 +26,16 @@
       {{ period_start|date:"d M Y" }} &ndash; {{ period_end|date:"d M Y" }}
     </p>
   </div>
-  <div class="flex gap-1 flex-wrap">
-    {% for key, label in interval_options %}
-    <a href="?interval={{ key }}"
-       class="btn btn-sm {% if interval == key %}btn-primary{% else %}btn-outline{% endif %}">
-      {{ label }}
-    </a>
-    {% endfor %}
+  <div class="flex items-center gap-2 flex-wrap">
+    <div class="flex gap-1 flex-wrap">
+      {% for key, label in interval_options %}
+      <a href="?interval={{ key }}"
+         class="btn btn-sm {% if interval == key %}btn-primary{% else %}btn-outline{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+    <a href="?interval={{ interval }}&export=csv" class="btn btn-outline btn-sm ml-2">Export CSV</a>
   </div>
 </div>
 

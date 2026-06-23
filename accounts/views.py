@@ -29,7 +29,7 @@ class HomeView(LoginRequiredMixin, View):
         if user.groups.filter(name='Requester').exists():
             return redirect('/bookings/my-requests/')
         if user.groups.filter(name='Dashboard Viewer').exists():
-            return redirect('/bookings/my-requests/')  # Temporary until Phase 7 dashboard exists.
+            return redirect(reverse_lazy('dashboard:dashboard'))
         # Ungrouped users see a neutral home page rather than an error.
         return render(request, 'home.html')
 

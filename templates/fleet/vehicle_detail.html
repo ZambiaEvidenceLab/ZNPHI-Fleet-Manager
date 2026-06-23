@@ -142,7 +142,10 @@
 <!-- Fuel Log -->
 <div id="fuel-section" class="card bg-base-100 shadow-sm border border-base-300 mb-6">
     <div class="card-body py-4 px-5">
-        <h2 class="card-title text-base mb-4">Fuel Log</h2>
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="card-title text-base">Fuel Log</h2>
+            <a href="{% url 'fleet:fuel_records_export' vehicle.pk %}" class="btn btn-outline btn-xs">Export CSV</a>
+        </div>
 
         {% if fuel_records %}
         <div class="overflow-x-auto mb-4">
@@ -231,7 +234,10 @@
 <!-- Maintenance History -->
 <div id="maintenance-section" class="card bg-base-100 shadow-sm border border-base-300">
     <div class="card-body py-4 px-5">
-        <h2 class="card-title text-base mb-4">Maintenance History</h2>
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="card-title text-base">Maintenance History</h2>
+            <a href="{% url 'fleet:maintenance_records_export' vehicle.pk %}" class="btn btn-outline btn-xs">Export CSV</a>
+        </div>
 
         {% if maintenance_records %}
         <div class="overflow-x-auto mb-4">

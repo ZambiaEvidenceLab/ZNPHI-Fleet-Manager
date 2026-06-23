@@ -1,9 +1,12 @@
+import csv
 import datetime
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
+from django.core.mail import send_mail
 from django.db.models import F, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.views.generic import DetailView, ListView, View
@@ -20,7 +23,30 @@ NUDGE_WINDOW_DAYS = 7
 BUFFER_DAYS = 1
 
 
-def get_overlapping_trips(district, period_from, period_to):
+def _send_new_request_email(transport_request):
+    """Send a notification email when a new request is submitted, if enabled in Settings."""
+    from settings_app.models import Settings
+    site_settings = Settings.load()
+    if not site_settings.email_notifications_enabled or not site_settings.notification_email:
+        return
+    send_mail(
+        subject=f'New transport request: {transport_request.programme_activity}',
+        message=(
+            f'A new transport request has been submitted.\n\n'
+            f'Requester: {transport_request.requester_name}\n'
+            f'Department: {transport_request.department}\n'
+            f'Programme/Activity: {transport_request.programme_activity}\n'
+            f'Period: {transport_request.period_from} to {transport_request.period_to}\n'
+            f'Destination: {transport_request.destination}, {transport_request.district}, {transport_request.province}\n'
+            f'Vehicles requested: {transport_request.num_vehicles}\n'
+        ),
+        from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
+        recipient_list=[site_settings.notification_email],
+        fail_silently=True,
+    )
+
+
+def get_overlapping_trips(district, period_from, period_to, nudge_days=NUDGE_WINDOW_DAYS):
     """Return active requests to the same district whose dates fall within the
     nudge time window around the requested period.
 
@@ -28,8 +54,8 @@ def get_overlapping_trips(district, period_from, period_to):
     qualifies, so requesters are warned about trips departing a few days earlier
     or later — not just exact date overlaps.
     """
-    window_start = period_from - datetime.timedelta(days=NUDGE_WINDOW_DAYS)
-    window_end = period_to + datetime.timedelta(days=NUDGE_WINDOW_DAYS)
+    window_start = period_from - datetime.timedelta(days=nudge_days)
+    window_end = period_to + datetime.timedelta(days=nudge_days)
     return (
         TransportRequest.objects
         .filter(
@@ -95,9 +121,15 @@ class TransportRequestCreateView(GroupRequiredMixin, View):
         if not form.is_valid():
             return render(request, self.template_name, {'form': form, 'provinces': provinces})
 
+        from settings_app.models import Settings
+        site_settings = Settings.load()
+
         cd = form.cleaned_data
         is_late = (cd['period_from'] - datetime.date.today()) < datetime.timedelta(weeks=2)
-        overlapping = get_overlapping_trips(cd['district'], cd['period_from'], cd['period_to'])
+        overlapping = get_overlapping_trips(
+            cd['district'], cd['period_from'], cd['period_to'],
+            nudge_days=site_settings.nudge_window_days(),
+        )
 
         if overlapping.exists():
             # Store POST data in session; redirect to nudge page.
@@ -108,7 +140,8 @@ class TransportRequestCreateView(GroupRequiredMixin, View):
             request.session['pending_request_is_late'] = is_late
             return redirect('bookings:coordination_nudge')
 
-        _save_transport_request(cd, submitted_by=request.user)
+        tr = _save_transport_request(cd, submitted_by=request.user)
+        _send_new_request_email(tr)
         if is_late:
             messages.warning(
                 request,
@@ -169,12 +202,13 @@ class CoordinationNudgeView(LoginRequiredMixin, View):
                 'is_late': is_late,
             })
 
-        _save_transport_request(
+        tr = _save_transport_request(
             form.cleaned_data,
             submitted_by=request.user,
             coordination_acknowledged=True,
             coordination_note=ack_form.cleaned_data.get('coordination_note', ''),
         )
+        _send_new_request_email(tr)
 
         # Clear session data after saving.
         request.session.pop('pending_request_data', None)
@@ -332,8 +366,52 @@ class RequestQueueView(GroupRequiredMixin, ListView):
             TransportRequest.objects
             .filter(status='Submitted')
             .select_related('department', 'district', 'province')
+            .prefetch_related('assignments__vehicle', 'assignments__driver')
             .order_by('-is_emergency', 'period_from')
         )
+
+    def get(self, request, *args, **kwargs):
+        if request.GET.get('export') == 'csv':
+            return self._csv_response()
+        return super().get(request, *args, **kwargs)
+
+    def _csv_response(self):
+        qs = (
+            TransportRequest.objects
+            .filter(status='Submitted')
+            .select_related('department', 'district', 'province')
+            .prefetch_related('assignments__vehicle', 'assignments__driver')
+            .order_by('-is_emergency', 'period_from')
+        )
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="request_queue.csv"'
+        writer = csv.writer(response)
+        writer.writerow([
+            'ID', 'Date Submitted', 'Emergency', 'Requester', 'Position',
+            'Department', 'Programme / Activity', 'Period From', 'Period To',
+            'Province', 'District', 'Destination',
+            '# Vehicles', '# Drivers', '# Passengers', 'Status',
+        ])
+        for tr in qs:
+            writer.writerow([
+                tr.pk,
+                tr.date_of_request,
+                'Yes' if tr.is_emergency else 'No',
+                tr.requester_name,
+                tr.position,
+                tr.department.name,
+                tr.programme_activity,
+                tr.period_from,
+                tr.period_to,
+                tr.province.name,
+                tr.district.name,
+                tr.destination,
+                tr.num_vehicles,
+                tr.num_drivers,
+                tr.num_passengers,
+                tr.status,
+            ])
+        return response
 
 
 class RequestReviewView(GroupRequiredMixin, View):
@@ -361,19 +439,23 @@ class RequestReviewView(GroupRequiredMixin, View):
         }
 
     def get(self, request, pk):
+        from settings_app.models import Settings
+        site_settings = Settings.load()
         tr = self._get_tr(pk)
-        avail_v = get_available_vehicles(tr.period_from, tr.period_to)
-        avail_d = get_available_drivers(tr.period_from, tr.period_to)
-        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to).exclude(pk=tr.pk)
+        avail_v = get_available_vehicles(tr.period_from, tr.period_to, buffer_days=site_settings.buffer_days)
+        avail_d = get_available_drivers(tr.period_from, tr.period_to, buffer_days=site_settings.buffer_days)
+        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to, nudge_days=site_settings.nudge_window_days()).exclude(pk=tr.pk)
         form = RequestApprovalForm(num_vehicles=tr.num_vehicles, available_vehicles=avail_v, available_drivers=avail_d)
         return render(request, self.template_name, self._context(tr, form, avail_v, overlapping))
 
     def post(self, request, pk):
+        from settings_app.models import Settings
+        site_settings = Settings.load()
         tr = self._get_tr(pk)
         action = request.POST.get('action')
-        avail_v = get_available_vehicles(tr.period_from, tr.period_to)
-        avail_d = get_available_drivers(tr.period_from, tr.period_to)
-        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to).exclude(pk=tr.pk)
+        avail_v = get_available_vehicles(tr.period_from, tr.period_to, buffer_days=site_settings.buffer_days)
+        avail_d = get_available_drivers(tr.period_from, tr.period_to, buffer_days=site_settings.buffer_days)
+        overlapping = get_overlapping_trips(tr.district, tr.period_from, tr.period_to, nudge_days=site_settings.nudge_window_days()).exclude(pk=tr.pk)
 
         if action == 'reject':
             tr.status = 'Rejected'

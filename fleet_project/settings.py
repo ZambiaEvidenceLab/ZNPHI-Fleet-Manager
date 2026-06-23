@@ -23,11 +23,22 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Third-party
     'django_htmx',
+    'django_crontab',
     # Local apps
     'accounts',
     'bookings',
     'fleet',
     'dashboard',
+    'settings_app',
+]
+
+# ---------------------------------------------------------------------------
+# Scheduled tasks — run_transitions fires daily at 01:00 server time.
+# To activate on a Linux server:  python manage.py crontab add
+# To remove:                       python manage.py crontab remove
+# ---------------------------------------------------------------------------
+CRONJOBS = [
+    ('0 1 * * *', 'django.core.management.call_command', ['run_transitions']),
 ]
 
 MIDDLEWARE = [
@@ -84,6 +95,17 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# Email — inactive by default (console backend). Configure via .env for production.
+# ---------------------------------------------------------------------------
+EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = env('EMAIL_HOST', default='localhost')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@znphi.gov.zm')
 
 LOGIN_URL = '/accounts/login/'
 LOGIN_REDIRECT_URL = '/'

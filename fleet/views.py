@@ -1,7 +1,9 @@
+import csv
 import datetime
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DetailView, ListView, UpdateView
@@ -9,7 +11,7 @@ from django.views.generic import DetailView, ListView, UpdateView
 from accounts.mixins import GroupRequiredMixin
 from bookings.models import TripAssignment
 from .forms import DriverEditForm, FuelRecordForm, MaintenanceRecordForm, VehicleEditForm
-from .models import Driver, Vehicle
+from .models import Driver, FuelRecord, MaintenanceRecord, Vehicle
 
 VIEWER_GROUPS = ['Fleet Manager', 'Dashboard Viewer', 'Superadmin']
 MANAGER_GROUPS = ['Fleet Manager', 'Superadmin']
@@ -28,6 +30,34 @@ class VehicleListView(GroupRequiredMixin, ListView):
     model = Vehicle
     template_name = 'fleet/vehicle_list.html'
     context_object_name = 'vehicles'
+
+    def get(self, request, *args, **kwargs):
+        if request.GET.get('export') == 'csv':
+            return self._csv_response()
+        return super().get(request, *args, **kwargs)
+
+    def _csv_response(self):
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="vehicles.csv"'
+        writer = csv.writer(response)
+        writer.writerow([
+            'License Plate', 'Make', 'Model', 'Year', 'Type', 'Fuel', 'Seats',
+            'Status', 'Current Mileage (km)', 'Last Service Date',
+            'Last Service Mileage (km)', 'Service Interval (km)',
+            'Maintenance Status', 'Km to Next Service',
+        ])
+        for v in Vehicle.objects.order_by('license_plate'):
+            writer.writerow([
+                v.license_plate, v.make, v.model, v.year,
+                v.vehicle_type, v.fuel_type, v.seating_capacity,
+                v.status, v.current_mileage,
+                v.last_service_date or '',
+                v.last_service_mileage or '',
+                v.maintenance_interval_km,
+                v.maintenance_status,
+                v.km_until_service if v.km_until_service is not None else '',
+            ])
+        return response
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -198,3 +228,45 @@ class DriverEditView(GroupRequiredMixin, UpdateView):
     def form_valid(self, form):
         messages.success(self.request, 'Driver updated successfully.')
         return super().form_valid(form)
+
+
+# ---------------------------------------------------------------------------
+# CSV exports
+# ---------------------------------------------------------------------------
+
+def fuel_records_export(request, pk):
+    """Export all fuel records for a vehicle as CSV. All viewer roles allowed."""
+    if not request.user.is_authenticated:
+        return redirect(f'{reverse_lazy("accounts:login")}?next={request.path}')
+    if not request.user.groups.filter(name__in=VIEWER_GROUPS).exists():
+        raise PermissionDenied
+
+    vehicle = get_object_or_404(Vehicle, pk=pk)
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = (
+        f'attachment; filename="fuel_{vehicle.license_plate.replace(" ", "_")}.csv"'
+    )
+    writer = csv.writer(response)
+    writer.writerow(['Date', 'Location', 'Litres', 'Cost per Litre (K)', 'Total Cost (K)', 'Mileage at Fill-up (km)', 'Notes'])
+    for r in vehicle.fuel_records.order_by('date'):
+        writer.writerow([r.date, r.location, r.liters, r.cost_per_liter, r.total_cost, r.mileage_at_fillup, r.notes])
+    return response
+
+
+def maintenance_records_export(request, pk):
+    """Export all maintenance records for a vehicle as CSV. All viewer roles allowed."""
+    if not request.user.is_authenticated:
+        return redirect(f'{reverse_lazy("accounts:login")}?next={request.path}')
+    if not request.user.groups.filter(name__in=VIEWER_GROUPS).exists():
+        raise PermissionDenied
+
+    vehicle = get_object_or_404(Vehicle, pk=pk)
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = (
+        f'attachment; filename="maintenance_{vehicle.license_plate.replace(" ", "_")}.csv"'
+    )
+    writer = csv.writer(response)
+    writer.writerow(['Date', 'Mileage at Service (km)', 'Service Type', 'Cost (K)', 'Vendor', 'Notes'])
+    for r in vehicle.maintenance_records.order_by('date'):
+        writer.writerow([r.date, r.mileage_at_service, r.service_type, r.cost, r.vendor, r.notes])
+    return response

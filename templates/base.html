@@ -42,6 +42,9 @@
                 <li><a href="{% url 'dashboard:gantt' %}" class="font-medium">Gantt</a></li>
                 <li><a href="{% url 'dashboard:dashboard' %}" class="font-medium">Dashboard</a></li>
                 {% endif %}
+                {% if is_fleet_manager or is_superadmin %}
+                <li><a href="{% url 'settings_app:settings' %}" class="font-medium">Settings</a></li>
+                {% endif %}
                 {% if is_superadmin %}
                 <li><a href="{% url 'accounts:user_list' %}" class="font-medium">User Management</a></li>
                 {% endif %}

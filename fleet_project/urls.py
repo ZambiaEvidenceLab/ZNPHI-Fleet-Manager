@@ -10,4 +10,5 @@ urlpatterns = [
     path('bookings/', include('bookings.urls')),
     path('fleet/', include('fleet.urls')),
     path('dashboard/', include('dashboard.urls')),
+    path('settings/', include('settings_app.urls')),
 ]

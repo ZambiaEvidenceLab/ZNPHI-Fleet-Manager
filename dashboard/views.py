@@ -1,10 +1,11 @@
 import calendar
+import csv
 import datetime
 import json
 from decimal import Decimal
 
 from django.db.models import Avg, Count, Max, Min, Sum
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.generic import View
 
@@ -189,6 +190,9 @@ class DashboardView(GroupRequiredMixin, View):
     template_name = 'dashboard/dashboard.html'
 
     def get(self, request):
+        if request.GET.get('export') == 'csv':
+            return self._csv_export(request)
+
         today = datetime.date.today()
         interval = request.GET.get('interval', '30d')
         if interval not in _INTERVAL_DAYS:
@@ -472,6 +476,89 @@ class DashboardView(GroupRequiredMixin, View):
             'available_months': available_months,
         }
         return render(request, self.template_name, context)
+
+    def _csv_export(self, request):
+        """One-file comprehensive dump of fleet activity for the selected interval."""
+        today = datetime.date.today()
+        interval = request.GET.get('interval', '30d')
+        if interval not in _INTERVAL_DAYS:
+            interval = '30d'
+        period_start, period_end, _ = _parse_interval(interval, today)
+        label = dict(INTERVAL_OPTIONS).get(interval, interval)
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = (
+            f'attachment; filename="dashboard_{interval}_{today}.csv"'
+        )
+        writer = csv.writer(response)
+
+        # Section 1: Transport Requests active in the period
+        writer.writerow([f'TRANSPORT REQUESTS — {label} ({period_start} to {period_end})'])
+        writer.writerow([
+            'ID', 'Date Submitted', 'Status', 'Emergency',
+            'Requester', 'Department', 'Programme / Activity',
+            'Period From', 'Period To', 'Duration (days)',
+            'Province', 'District', 'Destination',
+            '# Vehicles', '# Passengers',
+            'Assigned Vehicles', 'Assigned Drivers',
+            'Admin Comment',
+        ])
+        requests_qs = (
+            TransportRequest.objects
+            .filter(
+                period_from__lte=period_end,
+                period_to__gte=period_start,
+            )
+            .select_related('department', 'province', 'district')
+            .prefetch_related('assignments__vehicle', 'assignments__driver')
+            .order_by('period_from')
+        )
+        for tr in requests_qs:
+            vehicles = ', '.join(a.vehicle.license_plate for a in tr.assignments.all())
+            drivers = ', '.join(a.driver.name for a in tr.assignments.all())
+            duration = (tr.period_to - tr.period_from).days + 1
+            writer.writerow([
+                tr.pk, tr.date_of_request, tr.status,
+                'Yes' if tr.is_emergency else 'No',
+                tr.requester_name, tr.department.name, tr.programme_activity,
+                tr.period_from, tr.period_to, duration,
+                tr.province.name, tr.district.name, tr.destination,
+                tr.num_vehicles, tr.num_passengers,
+                vehicles, drivers,
+                tr.admin_comment,
+            ])
+
+        # Section 2: Fuel Records in period
+        writer.writerow([])
+        writer.writerow([f'FUEL RECORDS — {label} ({period_start} to {period_end})'])
+        writer.writerow(['Date', 'Vehicle', 'Location', 'Litres', 'Cost per Litre (K)', 'Total Cost (K)', 'Mileage (km)', 'Notes'])
+        for r in (
+            FuelRecord.objects
+            .filter(date__range=(period_start, period_end))
+            .select_related('vehicle')
+            .order_by('date')
+        ):
+            writer.writerow([
+                r.date, r.vehicle.license_plate, r.location,
+                r.liters, r.cost_per_liter, r.total_cost, r.mileage_at_fillup, r.notes,
+            ])
+
+        # Section 3: Maintenance Records in period
+        writer.writerow([])
+        writer.writerow([f'MAINTENANCE RECORDS — {label} ({period_start} to {period_end})'])
+        writer.writerow(['Date', 'Vehicle', 'Mileage at Service (km)', 'Service Type', 'Cost (K)', 'Vendor', 'Notes'])
+        for r in (
+            MaintenanceRecord.objects
+            .filter(date__range=(period_start, period_end))
+            .select_related('vehicle')
+            .order_by('date')
+        ):
+            writer.writerow([
+                r.date, r.vehicle.license_plate, r.mileage_at_service,
+                r.service_type, r.cost, r.vendor, r.notes,
+            ])
+
+        return response
 
 
 class DistrictDataView(GroupRequiredMixin, View):

@@ -1,7 +1,9 @@
 import datetime
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import TestCase
+from django.core import mail
+from django.core.management import call_command
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from .models import Province, District, Department, TransportRequest, TripAssignment
 from .views import get_available_drivers, get_available_vehicles, get_overlapping_trips
@@ -909,4 +911,160 @@ class RequestReviewViewTest(TestCase):
         self.client.login(username='req', password='testpass123')
         url = reverse('bookings:request_review', args=[self.tr.pk])
         response = self.client.get(url)
+        self.assertEqual(response.status_code, 403)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: run_transitions management command
+# ---------------------------------------------------------------------------
+
+class RunTransitionsCommandTest(TestCase):
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+
+    def _make(self, status, period_from=None, period_to=None):
+        today = datetime.date.today()
+        return make_request(
+            province=self.province,
+            district=self.district,
+            department=self.department,
+            status=status,
+            period_from=period_from or today,
+            period_to=period_to or today + datetime.timedelta(days=3),
+        )
+
+    def test_approved_transitions_to_in_progress_when_started(self):
+        tr = self._make('Approved', period_from=datetime.date.today())
+        call_command('run_transitions', verbosity=0)
+        tr.refresh_from_db()
+        self.assertEqual(tr.status, 'In Progress')
+
+    def test_in_progress_transitions_to_completed_when_ended(self):
+        tr = self._make('In Progress', period_to=datetime.date.today() - datetime.timedelta(days=1))
+        call_command('run_transitions', verbosity=0)
+        tr.refresh_from_db()
+        self.assertEqual(tr.status, 'Completed')
+
+    def test_approved_future_trip_not_transitioned(self):
+        tr = self._make('Approved', period_from=datetime.date.today() + datetime.timedelta(days=5))
+        call_command('run_transitions', verbosity=0)
+        tr.refresh_from_db()
+        self.assertEqual(tr.status, 'Approved')
+
+    def test_submitted_not_transitioned(self):
+        tr = self._make('Submitted', period_from=datetime.date.today())
+        call_command('run_transitions', verbosity=0)
+        tr.refresh_from_db()
+        self.assertEqual(tr.status, 'Submitted')
+
+    def test_in_progress_ongoing_trip_stays(self):
+        """A trip whose end date is today or in the future should not be completed."""
+        tr = self._make('In Progress', period_to=datetime.date.today())
+        call_command('run_transitions', verbosity=0)
+        tr.refresh_from_db()
+        self.assertEqual(tr.status, 'In Progress')
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: email notification on new request submission
+# ---------------------------------------------------------------------------
+
+class NewRequestEmailTest(TestCase):
+    def setUp(self):
+        from settings_app.models import Settings
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.user = make_user(username='req_email', group_name='Requester')
+        self.client.login(username='req_email', password='testpass123')
+        four_weeks = datetime.date.today() + datetime.timedelta(weeks=4)
+        self.post_data = {
+            'requester_name': 'Test User',
+            'department': self.department.pk,
+            'position': 'Officer',
+            'programme_activity': 'Email Test Activity',
+            'period_from': str(four_weeks),
+            'period_to': str(four_weeks + datetime.timedelta(days=5)),
+            'province': self.province.pk,
+            'district': self.district.pk,
+            'destination': 'Lusaka',
+            'num_vehicles': 1,
+            'num_drivers': 1,
+            'num_passengers': 2,
+        }
+        self.url = reverse('bookings:request_create')
+        # Enable email and set address by default; individual tests override as needed.
+        s = Settings.load()
+        s.email_notifications_enabled = True
+        s.notification_email = 'fleet@znphi.gov.zm'
+        s.save()
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_email_sent_when_enabled(self):
+        self.client.post(self.url, self.post_data)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('fleet@znphi.gov.zm', mail.outbox[0].to)
+        self.assertIn('Email Test Activity', mail.outbox[0].subject)
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_email_not_sent_when_disabled(self):
+        from settings_app.models import Settings
+        s = Settings.load()
+        s.email_notifications_enabled = False
+        s.save()
+        self.client.post(self.url, self.post_data)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_email_not_sent_when_address_blank(self):
+        from settings_app.models import Settings
+        s = Settings.load()
+        s.notification_email = ''
+        s.save()
+        self.client.post(self.url, self.post_data)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Request Queue CSV export
+# ---------------------------------------------------------------------------
+
+class RequestQueueCSVTest(TestCase):
+    def setUp(self):
+        self.manager = make_user(username='fm_csv', group_name='Fleet Manager')
+        self.client.login(username='fm_csv', password='testpass123')
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.tr = make_request(
+            province=self.province,
+            district=self.district,
+            department=self.department,
+            status='Submitted',
+            programme_activity='CSV Export Test',
+        )
+        self.url = reverse('bookings:request_queue')
+
+    def test_csv_has_correct_content_type(self):
+        response = self.client.get(f'{self.url}?export=csv')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('text/csv', response['Content-Type'])
+
+    def test_csv_has_content_disposition_header(self):
+        response = self.client.get(f'{self.url}?export=csv')
+        self.assertIn('attachment', response['Content-Disposition'])
+        self.assertIn('.csv', response['Content-Disposition'])
+
+    def test_csv_contains_request_data(self):
+        response = self.client.get(f'{self.url}?export=csv')
+        content = response.content.decode('utf-8')
+        self.assertIn('CSV Export Test', content)
+        self.assertIn('Programme / Activity', content)
+
+    def test_csv_requester_gets_403(self):
+        requester = make_user(username='req_csv', group_name='Requester')
+        self.client.login(username='req_csv', password='testpass123')
+        response = self.client.get(f'{self.url}?export=csv')
         self.assertEqual(response.status_code, 403)
