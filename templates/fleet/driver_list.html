@@ -9,7 +9,12 @@
         <h1 class="text-2xl font-bold text-base-content">Drivers</h1>
         <p class="text-sm text-base-content/60 mt-1">{{ total }} driver{{ total|pluralize }} registered</p>
     </div>
-    <a href="{% url 'fleet:vehicle_list' %}" class="btn btn-outline btn-sm">View Vehicles</a>
+    <div class="flex gap-2">
+        <a href="{% url 'fleet:vehicle_list' %}" class="btn btn-outline btn-sm">View Vehicles</a>
+        {% if can_edit %}
+        <a href="{% url 'fleet:driver_add' %}" class="btn btn-primary btn-sm">+ Add Driver</a>
+        {% endif %}
+    </div>
 </div>
 
 <!-- Status summary -->

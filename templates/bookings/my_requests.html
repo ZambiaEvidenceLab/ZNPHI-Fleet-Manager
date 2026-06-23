@@ -56,7 +56,7 @@
                     </td>
                     <td class="text-right whitespace-nowrap">
                         <a href="{% url 'bookings:request_detail' req.pk %}" class="btn btn-ghost btn-xs">View</a>
-                        {% if req.status not in "Completed,Cancelled" %}
+                        {% if req.status == 'Submitted' or req.status == 'Approved' or req.status == 'In Progress' %}
                         <form method="post" action="{% url 'bookings:request_cancel' req.pk %}" class="inline"
                               onsubmit="return confirm('Cancel this request?')">
                             {% csrf_token %}

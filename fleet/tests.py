@@ -457,3 +457,86 @@ class DriverViewAccessTest(TestCase):
         self.driver.refresh_from_db()
         self.assertEqual(self.driver.status, 'On Leave')
         self.assertRedirects(response, reverse('fleet:driver_list'))
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Vehicle and Driver create views
+# ---------------------------------------------------------------------------
+
+class VehicleCreateViewTest(TestCase):
+
+    def setUp(self):
+        self.fm = make_user('fm_create', 'Fleet Manager')
+        self.viewer = make_user('dv_create', 'Dashboard Viewer')
+        self.add_url = reverse('fleet:vehicle_add')
+        self.valid_data = {
+            'make': 'Toyota',
+            'model': 'Land Cruiser',
+            'year': 2024,
+            'license_plate': 'ZM NEW 01',
+            'vehicle_type': 'Land Cruiser',
+            'fuel_type': 'Diesel',
+            'seating_capacity': 7,
+            'status': 'Available',
+            'current_mileage': 0,
+            'maintenance_interval_km': 5000,
+        }
+
+    def test_get_form_accessible_to_fleet_manager(self):
+        self.client.force_login(self.fm)
+        self.assertEqual(self.client.get(self.add_url).status_code, 200)
+
+    def test_get_form_forbidden_to_dashboard_viewer(self):
+        self.client.force_login(self.viewer)
+        self.assertEqual(self.client.get(self.add_url).status_code, 403)
+
+    def test_valid_post_creates_vehicle(self):
+        self.client.force_login(self.fm)
+        self.client.post(self.add_url, self.valid_data)
+        self.assertTrue(Vehicle.objects.filter(license_plate='ZM NEW 01').exists())
+
+    def test_valid_post_redirects_to_detail(self):
+        self.client.force_login(self.fm)
+        response = self.client.post(self.add_url, self.valid_data)
+        vehicle = Vehicle.objects.get(license_plate='ZM NEW 01')
+        self.assertRedirects(response, reverse('fleet:vehicle_detail', kwargs={'pk': vehicle.pk}))
+
+    def test_duplicate_license_plate_shows_error(self):
+        make_vehicle(license_plate='ZM DUP 99')
+        self.client.force_login(self.fm)
+        data = dict(self.valid_data, license_plate='ZM DUP 99')
+        response = self.client.post(self.add_url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Vehicle.objects.filter(license_plate='ZM DUP 99').count() > 1)
+
+
+class DriverCreateViewTest(TestCase):
+
+    def setUp(self):
+        self.fm = make_user('fm_driver_create', 'Fleet Manager')
+        self.viewer = make_user('dv_driver_create', 'Dashboard Viewer')
+        self.add_url = reverse('fleet:driver_add')
+
+    def test_get_form_accessible_to_fleet_manager(self):
+        self.client.force_login(self.fm)
+        self.assertEqual(self.client.get(self.add_url).status_code, 200)
+
+    def test_get_form_forbidden_to_dashboard_viewer(self):
+        self.client.force_login(self.viewer)
+        self.assertEqual(self.client.get(self.add_url).status_code, 403)
+
+    def test_valid_post_creates_driver(self):
+        self.client.force_login(self.fm)
+        self.client.post(self.add_url, {'name': 'New Driver', 'phone': '0977000000', 'status': 'Available'})
+        self.assertTrue(Driver.objects.filter(name='New Driver').exists())
+
+    def test_valid_post_redirects_to_driver_list(self):
+        self.client.force_login(self.fm)
+        response = self.client.post(self.add_url, {'name': 'New Driver 2', 'phone': '', 'status': 'Available'})
+        self.assertRedirects(response, reverse('fleet:driver_list'))
+
+    def test_missing_name_shows_error(self):
+        self.client.force_login(self.fm)
+        response = self.client.post(self.add_url, {'name': '', 'phone': '', 'status': 'Available'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Driver.objects.filter(name='').count(), 0)

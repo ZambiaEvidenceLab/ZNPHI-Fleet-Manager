@@ -6,7 +6,7 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
-from django.views.generic import DetailView, ListView, UpdateView
+from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
 from accounts.mixins import GroupRequiredMixin
 from bookings.models import TripAssignment
@@ -100,6 +100,17 @@ class VehicleDetailView(GroupRequiredMixin, DetailView):
         context['maintenance_form'] = MaintenanceRecordForm(initial={'date': datetime.date.today()})
         context['can_edit'] = _is_manager(self.request.user)
         return context
+
+
+class VehicleCreateView(GroupRequiredMixin, CreateView):
+    group_required = MANAGER_GROUPS
+    model = Vehicle
+    form_class = VehicleEditForm
+    template_name = 'fleet/vehicle_add.html'
+
+    def get_success_url(self):
+        messages.success(self.request, 'Vehicle added successfully.')
+        return reverse('fleet:vehicle_detail', kwargs={'pk': self.object.pk})
 
 
 class VehicleEditView(GroupRequiredMixin, UpdateView):
@@ -216,6 +227,18 @@ class DriverListView(GroupRequiredMixin, ListView):
         context['count_on_leave'] = qs.filter(status='On Leave').count()
         context['can_edit'] = _is_manager(self.request.user)
         return context
+
+
+class DriverCreateView(GroupRequiredMixin, CreateView):
+    group_required = MANAGER_GROUPS
+    model = Driver
+    form_class = DriverEditForm
+    template_name = 'fleet/driver_add.html'
+    success_url = reverse_lazy('fleet:driver_list')
+
+    def form_valid(self, form):
+        messages.success(self.request, 'Driver added successfully.')
+        return super().form_valid(form)
 
 
 class DriverEditView(GroupRequiredMixin, UpdateView):

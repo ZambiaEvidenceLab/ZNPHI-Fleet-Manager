@@ -11,6 +11,9 @@
     <div class="flex gap-2">
         <a href="?export=csv" class="btn btn-outline btn-sm">Export CSV</a>
         <a href="{% url 'fleet:driver_list' %}" class="btn btn-outline btn-sm">View Drivers</a>
+        {% if can_edit %}
+        <a href="{% url 'fleet:vehicle_add' %}" class="btn btn-primary btn-sm">+ Add Vehicle</a>
+        {% endif %}
     </div>
 </div>
 
