@@ -16,6 +16,7 @@ import random
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand
+from django.core.management import call_command
 from django.db import transaction
 
 from bookings.models import Department, District, Province, TransportRequest, TripAssignment
@@ -202,6 +203,12 @@ class Command(BaseCommand):
             f'{FuelRecord.objects.count()} fuel records, '
             f'{MaintenanceRecord.objects.count()} maintenance records.'
         ))
+
+        # SEED_TODAY is anchored to a fixed date; real-today may be later.
+        # Apply date-based status transitions immediately so the DB reflects
+        # the correct state whenever seed_data is run.
+        self.stdout.write('Applying status transitions for real-today…')
+        call_command('run_transitions')
 
     # ── Drivers ───────────────────────────────────────────────────────────────
 
