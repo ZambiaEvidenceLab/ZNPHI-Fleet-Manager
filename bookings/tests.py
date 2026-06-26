@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from .models import Province, District, Department, TransportRequest, TripAssignment
 from .views import get_available_drivers, get_available_vehicles, get_overlapping_trips
+from .services import sync_fleet_statuses
 from fleet.models import Vehicle, Driver
 
 User = get_user_model()
@@ -528,16 +529,41 @@ class GetOverlappingTripsTest(TestCase):
         result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
         self.assertEqual(result.count(), 0)
 
-    def test_trip_just_inside_window_triggers(self):
-        # A trip starting exactly 7 days after our end date — just inside the window.
-        nearby = self.future + datetime.timedelta(days=3 + 7)  # period_to + 3 days + window
+    def test_start_and_end_within_window_triggers(self):
+        # Both start and end are within the 7-day window of ours → coordination opportunity.
         make_request(
             province=self.province, district=self.district,
-            period_from=nearby, period_to=nearby + datetime.timedelta(days=1),
+            period_from=self.future + datetime.timedelta(days=2),
+            period_to=self.future + datetime.timedelta(days=4),
             status='Submitted',
         )
-        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=3))
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
         self.assertEqual(result.count(), 1)
+
+    def test_adjacent_trip_does_not_trigger(self):
+        # The regression this fix targets: an existing trip ending the day before
+        # ours starts is merely back-to-back, not a coordination opportunity.
+        existing_to = self.future - datetime.timedelta(days=1)
+        make_request(
+            province=self.province, district=self.district,
+            period_from=existing_to - datetime.timedelta(days=10),
+            period_to=existing_to,
+            status='Approved',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 0)
+
+    def test_matching_start_but_distant_end_does_not_trigger(self):
+        # Same start date, but the existing trip runs far longer → end dates are well
+        # outside the window, so under start-AND-end matching it is not flagged.
+        make_request(
+            province=self.province, district=self.district,
+            period_from=self.future,
+            period_to=self.future + datetime.timedelta(days=30),
+            status='Submitted',
+        )
+        result = get_overlapping_trips(self.district, self.future, self.future + datetime.timedelta(days=2))
+        self.assertEqual(result.count(), 0)
 
 
 class MyRequestsViewTest(TestCase):
@@ -790,14 +816,49 @@ class RequestQueueViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, 'bookings/request_queue.html')
 
-    def test_shows_only_submitted_requests(self):
+    def test_default_shows_submitted_and_approved(self):
         self.client.login(username='manager', password='testpass123')
         submitted = make_request(province=self.province, district=self.district, status='Submitted')
         approved = make_request(province=self.province, district=self.district, status='Approved')
         response = self.client.get(self.url)
         ctx = list(response.context['requests'])
         self.assertIn(submitted, ctx)
+        self.assertIn(approved, ctx)
+
+    def test_in_progress_and_completed_excluded(self):
+        self.client.login(username='manager', password='testpass123')
+        in_progress = make_request(province=self.province, district=self.district, status='In Progress')
+        completed = make_request(province=self.province, district=self.district, status='Completed')
+        response = self.client.get(self.url)
+        ctx = list(response.context['requests'])
+        self.assertNotIn(in_progress, ctx)
+        self.assertNotIn(completed, ctx)
+
+    def test_pending_filter_shows_only_submitted(self):
+        self.client.login(username='manager', password='testpass123')
+        submitted = make_request(province=self.province, district=self.district, status='Submitted')
+        approved = make_request(province=self.province, district=self.district, status='Approved')
+        response = self.client.get(self.url, {'show': 'pending'})
+        ctx = list(response.context['requests'])
+        self.assertIn(submitted, ctx)
         self.assertNotIn(approved, ctx)
+
+    def test_approved_filter_shows_only_approved(self):
+        self.client.login(username='manager', password='testpass123')
+        submitted = make_request(province=self.province, district=self.district, status='Submitted')
+        approved = make_request(province=self.province, district=self.district, status='Approved')
+        response = self.client.get(self.url, {'show': 'approved'})
+        ctx = list(response.context['requests'])
+        self.assertNotIn(submitted, ctx)
+        self.assertIn(approved, ctx)
+
+    def test_submitted_ordered_before_approved(self):
+        self.client.login(username='manager', password='testpass123')
+        approved = make_request(province=self.province, district=self.district, status='Approved')
+        submitted = make_request(province=self.province, district=self.district, status='Submitted')
+        response = self.client.get(self.url)
+        ctx = list(response.context['requests'])
+        self.assertLess(ctx.index(submitted), ctx.index(approved))
 
     def test_emergency_requests_ordered_first(self):
         self.client.login(username='manager', password='testpass123')
@@ -899,12 +960,72 @@ class RequestReviewViewTest(TestCase):
         self.assertEqual(self.tr.status, 'Submitted')
         self.assertEqual(TripAssignment.objects.filter(transport_request=self.tr).count(), 0)
 
-    def test_non_submitted_request_returns_404(self):
+    def test_approved_request_can_be_opened_for_editing(self):
         self.tr.status = 'Approved'
         self.tr.save()
         url = reverse('bookings:request_review', args=[self.tr.pk])
         response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['is_editing'])
+
+    def test_in_progress_request_returns_404(self):
+        self.tr.status = 'In Progress'
+        self.tr.save()
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
+
+    def test_completed_request_returns_404(self):
+        self.tr.status = 'Completed'
+        self.tr.save()
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_editing_approved_replaces_assignment(self):
+        # Approve with the first vehicle/driver, then edit to a different pair.
+        self.tr.status = 'Approved'
+        self.tr.approved_date = datetime.date.today()
+        self.tr.save()
+        TripAssignment.objects.create(transport_request=self.tr, vehicle=self.vehicle, driver=self.driver)
+
+        new_vehicle = make_vehicle(license_plate='ZM EDIT 02')
+        new_driver = make_driver(name='Edited Driver')
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.post(url, {
+            'action': 'approve',
+            'vehicle_1': str(new_vehicle.pk),
+            'driver_1': str(new_driver.pk),
+            'admin_comment': 'Reassigned.',
+        })
+        self.assertRedirects(response, reverse('bookings:request_queue'), fetch_redirect_response=False)
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.status, 'Approved')
+        assignments = TripAssignment.objects.filter(transport_request=self.tr)
+        self.assertEqual(assignments.count(), 1)
+        self.assertEqual(assignments.first().vehicle, new_vehicle)
+        self.assertEqual(assignments.first().driver, new_driver)
+
+    def test_editing_keeps_currently_assigned_vehicle_selectable(self):
+        # A vehicle assigned to this request must remain available while editing it,
+        # even though it would otherwise count as 'booked' for this period.
+        self.tr.status = 'Approved'
+        self.tr.save()
+        TripAssignment.objects.create(transport_request=self.tr, vehicle=self.vehicle, driver=self.driver)
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        response = self.client.get(url)
+        available = [item['vehicle'] for item in response.context['vehicles_with_info']]
+        self.assertIn(self.vehicle, available)
+
+    def test_rejecting_approved_request_releases_assignments(self):
+        self.tr.status = 'Approved'
+        self.tr.save()
+        TripAssignment.objects.create(transport_request=self.tr, vehicle=self.vehicle, driver=self.driver)
+        url = reverse('bookings:request_review', args=[self.tr.pk])
+        self.client.post(url, {'action': 'reject', 'admin_comment': 'Trip cancelled.'})
+        self.tr.refresh_from_db()
+        self.assertEqual(self.tr.status, 'Rejected')
+        self.assertEqual(TripAssignment.objects.filter(transport_request=self.tr).count(), 0)
 
     def test_requester_cannot_access_review(self):
         make_user(username='req', group_name='Requester')
@@ -965,6 +1086,97 @@ class RunTransitionsCommandTest(TestCase):
         call_command('run_transitions', verbosity=0)
         tr.refresh_from_db()
         self.assertEqual(tr.status, 'In Progress')
+
+
+# ---------------------------------------------------------------------------
+# Vehicle/driver status sync with the trip lifecycle
+# ---------------------------------------------------------------------------
+
+class SyncFleetStatusesTest(TestCase):
+
+    def setUp(self):
+        self.province = make_province()
+        self.district = make_district(province=self.province)
+        self.department = make_department()
+        self.today = datetime.date.today()
+
+    def _assign(self, status, vehicle, driver, period_from=None, period_to=None):
+        tr = make_request(
+            province=self.province, district=self.district, status=status,
+            period_from=period_from or self.today,
+            period_to=period_to or self.today + datetime.timedelta(days=3),
+        )
+        TripAssignment.objects.create(transport_request=tr, vehicle=vehicle, driver=driver)
+        return tr
+
+    def test_in_progress_marks_vehicle_on_trip_and_driver_on_assignment(self):
+        v, d = make_vehicle(), make_driver()
+        self._assign('In Progress', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db(); d.refresh_from_db()
+        self.assertEqual(v.status, 'On Trip')
+        self.assertEqual(d.status, 'On Assignment')
+
+    def test_approved_future_trip_does_not_mark_on_trip(self):
+        v, d = make_vehicle(), make_driver()
+        self._assign('Approved', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db(); d.refresh_from_db()
+        self.assertEqual(v.status, 'Available')
+        self.assertEqual(d.status, 'Available')
+
+    def test_completed_trip_releases_vehicle_and_driver(self):
+        v = make_vehicle(); d = make_driver()
+        v.status = 'On Trip'; v.save()
+        d.status = 'On Assignment'; d.save()
+        self._assign('Completed', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db(); d.refresh_from_db()
+        self.assertEqual(v.status, 'Available')
+        self.assertEqual(d.status, 'Available')
+
+    def test_in_maintenance_vehicle_not_overridden(self):
+        v = make_vehicle(); v.status = 'In Maintenance'; v.save()
+        d = make_driver()
+        self._assign('In Progress', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db()
+        self.assertEqual(v.status, 'In Maintenance')
+
+    def test_emergency_standby_vehicle_not_overridden(self):
+        v = make_vehicle(); v.status = 'Emergency Standby'; v.save()
+        d = make_driver()
+        self._assign('In Progress', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db()
+        self.assertEqual(v.status, 'Emergency Standby')
+
+    def test_on_leave_driver_not_overridden(self):
+        v = make_vehicle()
+        d = make_driver(); d.status = 'On Leave'; d.save()
+        self._assign('In Progress', v, d)
+        sync_fleet_statuses()
+        d.refresh_from_db()
+        self.assertEqual(d.status, 'On Leave')
+
+    def test_vehicle_on_second_active_trip_stays_on_trip(self):
+        # Releasing should consider all of a vehicle's trips, not just one.
+        v = make_vehicle(); d = make_driver()
+        self._assign('Completed', v, d)
+        self._assign('In Progress', v, d)
+        sync_fleet_statuses()
+        v.refresh_from_db()
+        self.assertEqual(v.status, 'On Trip')
+
+    def test_run_transitions_marks_started_trip_on_trip(self):
+        # End-to-end: an approved trip starting today flips to In Progress and its
+        # vehicle/driver become On Trip / On Assignment in the same command run.
+        v, d = make_vehicle(), make_driver()
+        self._assign('Approved', v, d, period_from=self.today)
+        call_command('run_transitions', verbosity=0)
+        v.refresh_from_db(); d.refresh_from_db()
+        self.assertEqual(v.status, 'On Trip')
+        self.assertEqual(d.status, 'On Assignment')
 
 
 # ---------------------------------------------------------------------------

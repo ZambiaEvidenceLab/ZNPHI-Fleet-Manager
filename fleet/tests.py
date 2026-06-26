@@ -540,3 +540,65 @@ class DriverCreateViewTest(TestCase):
         response = self.client.post(self.add_url, {'name': '', 'phone': '', 'status': 'Available'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Driver.objects.filter(name='').count(), 0)
+
+
+class VehicleListSortingTest(TestCase):
+
+    def setUp(self):
+        self.fm = make_user('sort_fm', 'Fleet Manager')
+        self.client.force_login(self.fm)
+        # Distinct values across every sortable column.
+        self.b = make_vehicle(license_plate='BBB 222', vehicle_type='Land Cruiser',
+                              current_mileage=20000, last_service_mileage=18000,
+                              maintenance_interval_km=5000, status='On Trip')  # km_to_service = 3000
+        self.a = make_vehicle(license_plate='AAA 111', vehicle_type='Hilux',
+                              current_mileage=80000, last_service_mileage=78000,
+                              maintenance_interval_km=5000, status='Available')  # km_to_service = 3000
+        self.c = make_vehicle(license_plate='CCC 333', vehicle_type='Hilux',
+                              current_mileage=10000, last_service_mileage=9000,
+                              maintenance_interval_km=5000, status='In Maintenance')  # km_to_service = 4000
+
+    def _plates(self, **params):
+        response = self.client.get(reverse('fleet:vehicle_list'), params)
+        return [v.license_plate for v in response.context['vehicles']]
+
+    def test_default_sort_is_plate_ascending(self):
+        self.assertEqual(self._plates(), ['AAA 111', 'BBB 222', 'CCC 333'])
+
+    def test_sort_by_plate_descending(self):
+        self.assertEqual(self._plates(sort='plate', dir='desc'), ['CCC 333', 'BBB 222', 'AAA 111'])
+
+    def test_sort_by_mileage_ascending(self):
+        # current_mileage: CCC=10000, BBB=20000, AAA=80000
+        self.assertEqual(self._plates(sort='mileage', dir='asc'), ['CCC 333', 'BBB 222', 'AAA 111'])
+
+    def test_sort_by_km_to_service_descending(self):
+        # km_to_service: BBB=3000, AAA=3000, CCC=4000 → CCC first when desc
+        self.assertEqual(self._plates(sort='service', dir='desc')[0], 'CCC 333')
+
+    def test_invalid_sort_falls_back_to_default(self):
+        self.assertEqual(self._plates(sort='not_a_field'), ['AAA 111', 'BBB 222', 'CCC 333'])
+
+
+class DriverListSortingTest(TestCase):
+
+    def setUp(self):
+        self.fm = make_user('sort_fm2', 'Fleet Manager')
+        self.client.force_login(self.fm)
+        make_driver(name='Charlie', status='Available')
+        make_driver(name='Alice', status='On Leave')
+        make_driver(name='Bob', status='On Assignment')
+
+    def _names(self, **params):
+        response = self.client.get(reverse('fleet:driver_list'), params)
+        return [d.name for d in response.context['drivers']]
+
+    def test_default_sort_is_name_ascending(self):
+        self.assertEqual(self._names(), ['Alice', 'Bob', 'Charlie'])
+
+    def test_sort_by_name_descending(self):
+        self.assertEqual(self._names(sort='name', dir='desc'), ['Charlie', 'Bob', 'Alice'])
+
+    def test_sort_by_status_ascending(self):
+        # status alphabetical: Available, On Assignment, On Leave → Charlie, Bob, Alice
+        self.assertEqual(self._names(sort='status', dir='asc'), ['Charlie', 'Bob', 'Alice'])

@@ -3,12 +3,13 @@ import datetime
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
+from django.db.models import ExpressionWrapper, F, IntegerField
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
-from accounts.mixins import GroupRequiredMixin
+from accounts.mixins import GroupRequiredMixin, SortableListMixin
 from bookings.models import TripAssignment
 from .forms import DriverEditForm, FuelRecordForm, MaintenanceRecordForm, VehicleEditForm
 from .models import Driver, FuelRecord, MaintenanceRecord, Vehicle
@@ -25,11 +26,31 @@ def _is_manager(user):
 # Vehicle views
 # ---------------------------------------------------------------------------
 
-class VehicleListView(GroupRequiredMixin, ListView):
+class VehicleListView(SortableListMixin, GroupRequiredMixin, ListView):
     group_required = VIEWER_GROUPS
     model = Vehicle
     template_name = 'fleet/vehicle_list.html'
     context_object_name = 'vehicles'
+    sortable_fields = {
+        'plate': 'license_plate',
+        'type': 'vehicle_type',
+        'mileage': 'current_mileage',
+        # km_to_service is an annotation (see get_queryset), not a stored field.
+        'service': 'km_to_service',
+        'status': 'status',
+    }
+    default_sort = 'plate'
+
+    def get_queryset(self):
+        # Annotate km-to-service so the column can be sorted in the database.
+        # Mirrors Vehicle.km_until_service; NULL (no baseline) sorts last under Postgres.
+        qs = Vehicle.objects.annotate(
+            km_to_service=ExpressionWrapper(
+                F('last_service_mileage') + F('maintenance_interval_km') - F('current_mileage'),
+                output_field=IntegerField(),
+            )
+        )
+        return self.apply_sort(qs)
 
     def get(self, request, *args, **kwargs):
         if request.GET.get('export') == 'csv':
@@ -212,11 +233,16 @@ def maintenance_record_add(request, pk):
 # Driver views
 # ---------------------------------------------------------------------------
 
-class DriverListView(GroupRequiredMixin, ListView):
+class DriverListView(SortableListMixin, GroupRequiredMixin, ListView):
     group_required = VIEWER_GROUPS
     model = Driver
     template_name = 'fleet/driver_list.html'
     context_object_name = 'drivers'
+    sortable_fields = {'name': 'name', 'phone': 'phone', 'status': 'status'}
+    default_sort = 'name'
+
+    def get_queryset(self):
+        return self.apply_sort(Driver.objects.all())
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

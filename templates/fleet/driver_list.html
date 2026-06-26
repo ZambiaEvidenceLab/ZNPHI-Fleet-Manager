@@ -40,9 +40,9 @@
             <table class="table table-zebra w-full">
                 <thead>
                     <tr class="text-base-content/60 text-xs uppercase tracking-wide">
-                        <th>Name</th>
-                        <th>Phone</th>
-                        <th>Status</th>
+                        {% include "partials/sort_header.html" with label="Name" key="name" %}
+                        {% include "partials/sort_header.html" with label="Phone" key="phone" %}
+                        {% include "partials/sort_header.html" with label="Status" key="status" %}
                         {% if can_edit %}<th></th>{% endif %}
                     </tr>
                 </thead>

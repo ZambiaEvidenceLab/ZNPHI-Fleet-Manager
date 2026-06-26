@@ -45,11 +45,11 @@
                 <thead>
                     <tr class="text-base-content/60 text-xs uppercase tracking-wide">
                         <th class="w-8">Maint.</th>
-                        <th>Vehicle</th>
-                        <th>Type</th>
-                        <th class="text-right">Mileage</th>
-                        <th class="text-right">Km to Service</th>
-                        <th>Status</th>
+                        {% include "partials/sort_header.html" with label="Vehicle" key="plate" %}
+                        {% include "partials/sort_header.html" with label="Type" key="type" %}
+                        {% include "partials/sort_header.html" with label="Mileage" key="mileage" th_class="text-right" %}
+                        {% include "partials/sort_header.html" with label="Km to Service" key="service" th_class="text-right" %}
+                        {% include "partials/sort_header.html" with label="Status" key="status" %}
                         {% if can_edit %}<th></th>{% endif %}
                     </tr>
                 </thead>

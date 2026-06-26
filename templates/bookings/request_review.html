@@ -14,7 +14,11 @@
             </p>
         </div>
         <div class="flex flex-col items-end gap-1 mt-1">
+            {% if tr.status == 'Approved' %}
+            <span class="badge badge-success">Approved</span>
+            {% else %}
             <span class="badge badge-warning">Submitted</span>
+            {% endif %}
             {% if tr.is_emergency %}<span class="badge badge-error badge-sm">Emergency</span>{% endif %}
         </div>
     </div>
@@ -192,12 +196,12 @@
         <div class="flex justify-between items-center">
             <button type="submit" name="action" value="reject"
                     class="btn btn-error btn-outline"
-                    onclick="return confirm('Reject this request?')">
-                Reject request
+                    onclick="return confirm('{% if is_editing %}Reject this request and release its assigned vehicles?{% else %}Reject this request?{% endif %}')">
+                {% if is_editing %}Reject &amp; unassign{% else %}Reject request{% endif %}
             </button>
             {% if vehicles_with_info %}
             <button type="submit" name="action" value="approve" class="btn btn-success">
-                Approve &amp; assign
+                {% if is_editing %}Save changes{% else %}Approve &amp; assign{% endif %}
             </button>
             {% else %}
             <div class="tooltip tooltip-left" data-tip="No available vehicles to assign">
